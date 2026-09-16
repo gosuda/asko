@@ -14,9 +14,11 @@ type t = {
   http_timeout : float;
   send_interval : float;
   confirm_timeout : float;
-  max_input_chars : int;
+  max_input_bytes : int;
+  max_history_bytes : int;
   max_response_bytes : int;
   max_output_tokens : int;
+  daily_budget_tokens : int;
   openrouter_url : string;
   model : string;
   embedding_model : string;
@@ -30,7 +32,7 @@ let default = {
   iris_url="http://127.0.0.1:3000"; bot_id=""; aliases=["요약봇"]; rooms=[];
   dry_run=true; retention_days=7; recovery_interval=30.; request_ttl=300.;
   cooldown=20.; http_timeout=45.; send_interval=1.; confirm_timeout=15.;
-  max_input_chars=240000; max_response_bytes=7000; max_output_tokens=1800;
+  max_input_bytes=240000; max_history_bytes=2000000; max_response_bytes=7000; max_output_tokens=1800; daily_budget_tokens=500000;
   openrouter_url="https://openrouter.ai/api/v1";
   model="google/gemini-3.1-flash-lite";
   embedding_model="openai/text-embedding-3-small";
@@ -57,9 +59,11 @@ let of_json json = Json_util.protect (fun () ->
     http_timeout=f "http_timeout" d.http_timeout;
     send_interval=f "send_interval" d.send_interval;
     confirm_timeout=f "confirm_timeout" d.confirm_timeout;
-    max_input_chars=i "max_input_chars" d.max_input_chars;
+    max_input_bytes=i "max_input_bytes" d.max_input_bytes;
+    max_history_bytes=i "max_history_bytes" d.max_history_bytes;
     max_response_bytes=i "max_response_bytes" d.max_response_bytes;
     max_output_tokens=i "max_output_tokens" d.max_output_tokens;
+    daily_budget_tokens=i "daily_budget_tokens" d.daily_budget_tokens;
     openrouter_url=s "openrouter_url" d.openrouter_url;
     model=s "model" d.model; embedding_model=s "embedding_model" d.embedding_model;
     api_key_env=s "api_key_env" d.api_key_env;
@@ -72,9 +76,10 @@ let of_json json = Json_util.protect (fun () ->
   if c.request_ttl <= 0. || c.http_timeout <= 0. || c.recovery_interval < 1.
      || c.send_interval < 0.2 || c.cooldown < 0. || c.confirm_timeout <= 0.
   then invalid "invalid timing configuration";
-  if c.max_input_chars < 1000 || c.max_input_chars > 2000000
+  if c.max_input_bytes < 1000 || c.max_input_bytes > 2000000
+     || c.max_history_bytes < c.max_input_bytes || c.max_history_bytes > 16000000
      || c.max_output_tokens < 100 || c.max_output_tokens > 16000
-     || c.max_response_bytes < 300 || c.max_response_bytes > 16000
+     || c.max_response_bytes < 300 || c.max_response_bytes > 16000 || c.daily_budget_tokens < 1000
   then invalid "invalid model budget";
   let valid_url ~https value =
     let uri = Uri.of_string value in

@@ -17,7 +17,7 @@ let serve config =
       let halt _ = if Lwt.is_sleeping stop then Lwt.wakeup_later stop_resolver () in
       let signals = List.map (fun signal -> Lwt_unix.on_signal signal halt) [Sys.sigint; Sys.sigterm] in
       Fun.protect ~finally:(fun () -> List.iter Lwt_unix.disable_signal_handler signals)
-        (fun () -> Lwt_main.run (Server.run ~stop config store))))
+        (fun () -> Lwt_main.run (Engine.run ~stop (Engine.create config store)))))
 
 let () =
   ignore (Unix.umask 0o077);
@@ -36,6 +36,13 @@ let () =
     | "serve" -> serve (configuration !config_path)
     | "status" -> let config = configuration !config_path in
         with_store config (fun store -> print_endline (Yojson.Safe.pretty_to_string (Store.stats store)))
+    | "outbox" -> let config = configuration !config_path in
+        with_store config (fun store ->
+          Store.recent_outbox store |> List.map (fun (item:Store.outgoing) -> `Assoc [
+            "id",`String (Int64.to_string item.id);"job_id",`String (Int64.to_string item.job_id);
+            "room_id",`String item.room_id;"state",`String item.state;"body",`String item.body;
+            "evidence",(match item.evidence with None->`Null | Some value->Yojson.Safe.from_string value)])
+          |> fun rows -> print_endline (Yojson.Safe.pretty_to_string (`List rows)))
     | "check-config" ->
         let c = configuration !config_path in
         print_endline (Yojson.Safe.pretty_to_string (`Assoc [
@@ -48,7 +55,7 @@ let () =
          | Ok (200, body) -> Printf.printf "{\"https\":true,\"status\":200,\"bytes\":%d}\n" (String.length body)
          | Ok (status, _) -> die ("HTTPS probe status " ^ string_of_int status)
          | Error error -> die ("HTTPS probe failed: " ^ Net.error_name error))
-    | _ -> print_endline "asko serve | status | check-config | probe-https | version [--config path]"
+    | _ -> print_endline "asko serve | status | outbox | check-config | probe-https | version [--config path]"
   with
   | Store.Error error -> die ("database error: " ^ error)
   | Sys_error _ -> die "filesystem operation failed"

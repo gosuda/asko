@@ -12,3 +12,13 @@
  (name test_http)
  (modules test_http)
  (libraries asko unix yojson lwt.unix))
+
+(test
+ (name test_summary)
+ (modules test_summary)
+ (libraries asko unix yojson))
+
+(test
+ (name test_pipeline)
+ (modules test_pipeline)
+ (libraries asko unix yojson sqlite3 lwt.unix cohttp-lwt-unix))

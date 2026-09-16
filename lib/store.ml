@@ -1,12 +1,16 @@
 open Types
 
 exception Error of string
+exception Stale_snapshot
+exception History_too_large
 type t = { db : Sqlite3.db }
 type job = { id : int64; invocation : invocation; attempts : int; expires_at : float }
 type enqueue_result = Queued of int64 | Duplicate | Stale | Rate_limited
 type outgoing = {
   id : int64; job_id : int64; source : string; room_id : string;
   body : string; state : string; floor_seq : int64 option; attempted_at : float option;
+  snapshot_version : int option;
+  evidence : string option;
 }
 
 let text x = Sqlite3.Data.TEXT x
@@ -90,8 +94,13 @@ let open_ path =
      exec t "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL";
      (match count t "PRAGMA user_version" [] with
       | 0 -> transaction t (fun () -> exec t schema)
-      | 1 -> ()
+      | 1 | 2 | 3 -> ()
       | _ -> raise (Error "database schema is newer than this program"));
+     if count t "PRAGMA user_version" [] = 1 then
+       transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN snapshot_version INTEGER; PRAGMA user_version=2");
+     if count t "PRAGMA user_version" [] = 2 then
+       transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN evidence TEXT; PRAGMA user_version=3");
+     exec t "CREATE INDEX IF NOT EXISTS messages_retention ON messages(created_at)";
      t
    with exn -> ignore (Sqlite3.db_close t.db); raise exn)
 let close t = ignore (Sqlite3.db_close t.db)
@@ -113,7 +122,15 @@ let get_message t ~source ~seq =
     [text source; integer seq] message_row
 
 let invalidate_embeddings t ~source ~room =
-  run t "DELETE FROM embeddings WHERE source=? AND room_id=?" [text source; text room]
+  run t "DELETE FROM embeddings WHERE source=? AND room_id=?" [text source; text room];
+  run t {|UPDATE jobs SET state='failed',last_error='source_changed' WHERE id IN
+    (SELECT job_id FROM outbox WHERE source=? AND room_id=? AND snapshot_version IS NOT NULL AND state='pending')|}
+    [text source; text room];
+  run t {|UPDATE outbox SET body='',evidence=NULL,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END
+    WHERE source=? AND room_id=? AND snapshot_version IS NOT NULL|} [text source; text room]
+
+let room_version t ~source ~room =
+  count t "SELECT version FROM rooms WHERE source=? AND room_id=?" [text source; text room]
 
 let put_message t ~is_command (message : message) =
   let old = get_message t ~source:message.source ~seq:message.seq in
@@ -133,9 +150,12 @@ let put_message t ~is_command (message : message) =
        text message.sender_id; text message.sender_name; real message.created_at; text message.text;
        opt_text message.reply_to; text (Json_util.to_string (`List (List.map (fun x -> `String x) message.mentions)));
        boolean message.is_bot; boolean message.deleted; boolean is_command];
-    run t "INSERT INTO rooms VALUES(?,?,1) ON CONFLICT(source,room_id) DO UPDATE SET version=version+1"
+    run t "INSERT INTO rooms VALUES(?,?,0) ON CONFLICT(source,room_id) DO NOTHING"
       [text message.source; text message.room_id];
-    if old <> None then invalidate_embeddings t ~source:message.source ~room:message.room_id
+    if old <> None then begin
+      run t "UPDATE rooms SET version=version+1 WHERE source=? AND room_id=?" [text message.source; text message.room_id];
+      invalidate_embeddings t ~source:message.source ~room:message.room_id
+    end
   end;
   old = None
 
@@ -155,16 +175,20 @@ let anchor t (request : message) = match request.reply_to with
        | [message] -> Some message
        | _ -> None)
 
-let messages t (range : range) =
+let messages ?(max_bytes=2000000) t (range : range) =
   let lower_sql, lower_arg = match range.lower with
     | At_time at -> "created_at>=?", real at
     | After_message seq -> "seq>?", integer seq
     | From_message seq -> "seq>=?", integer seq in
-  rows t ("SELECT " ^ message_columns ^ {| FROM messages WHERE source=? AND room_id=?
+  let where = {| FROM messages WHERE source=? AND room_id=?
     AND seq<? AND created_at<=? AND created_at>=? AND is_bot=0 AND deleted=0 AND is_command=0
-    AND |} ^ lower_sql ^ " ORDER BY seq ASC")
-    [text range.source; text range.room_id; integer range.before_seq; real range.through_time;
-     real range.retention_start; lower_arg] message_row
+    AND |} ^ lower_sql in
+  let values=[text range.source; text range.room_id; integer range.before_seq; real range.through_time;
+     real range.retention_start; lower_arg] in
+  let size = one t ("SELECT COALESCE(SUM(LENGTH(CAST(text AS BLOB))),0),COUNT(*)" ^ where) values
+      (fun stmt -> Sqlite3.column_int64 stmt 0, Sqlite3.column_int stmt 1) |> Option.get in
+  if fst size > Int64.of_int max_bytes || snd size > 50000 then raise History_too_large;
+  rows t ("SELECT " ^ message_columns ^ where ^ " ORDER BY seq ASC") values message_row
 
 let cursor t ~source ~room =
   one t "SELECT cursor FROM recovery WHERE source=? AND room_id=?" [text source; text room]
@@ -217,10 +241,15 @@ let recover_jobs t ~now = transaction t (fun () ->
   exec t "UPDATE outbox SET state='uncertain',error='process_restarted_during_send' WHERE state='sending'";
   exec t "UPDATE jobs SET state='uncertain' WHERE id IN (SELECT job_id FROM outbox WHERE state='uncertain')")
 
-let finish_job t job ~body ~dry_run = transaction t (fun () ->
+let finish_job t job ~body ~dry_run ~snapshot_version ~evidence = transaction t (fun () ->
   let message = job.invocation.message in
-  run t "INSERT INTO outbox(job_id,source,room_id,body,state) VALUES(?,?,?,?,?) ON CONFLICT(job_id) DO NOTHING"
-    [integer job.id; text message.source; text message.room_id; text body; text (if dry_run then "dry_run" else "pending")];
+  (match snapshot_version with
+   | Some expected when expected <> room_version t ~source:message.source ~room:message.room_id -> raise Stale_snapshot
+   | _ -> ());
+  run t "INSERT INTO outbox(job_id,source,room_id,body,state,snapshot_version,evidence) VALUES(?,?,?,?,?,?,?) ON CONFLICT(job_id) DO NOTHING"
+    [integer job.id; text message.source; text message.room_id; text body; text (if dry_run then "dry_run" else "pending");
+     (match snapshot_version with None->Sqlite3.Data.NULL | Some value->integer (Int64.of_int value));
+     opt_text (Option.map Json_util.to_string evidence)];
   run t "UPDATE jobs SET state=? WHERE id=?" [text (if dry_run then "completed" else "awaiting_send"); integer job.id])
 
 let fail_job t job ~now ~retry ~reason =
@@ -233,8 +262,10 @@ let outgoing_row stmt = {
   source=Sqlite3.column_text stmt 2; room_id=Sqlite3.column_text stmt 3;
   body=Sqlite3.column_text stmt 4; state=Sqlite3.column_text stmt 5;
   floor_seq=optional_int64 stmt 6; attempted_at=optional_float stmt 7;
+  snapshot_version=(if Sqlite3.column_is_null stmt 8 then None else Some (Sqlite3.column_int stmt 8));
+  evidence=optional_text stmt 9;
 }
-let outgoing_columns = "id,job_id,source,room_id,body,state,floor_seq,attempted_at"
+let outgoing_columns = "id,job_id,source,room_id,body,state,floor_seq,attempted_at,snapshot_version,evidence"
 let next_outgoing t ~now =
   run t {|UPDATE outbox SET state='expired' WHERE state='pending'
     AND job_id IN (SELECT id FROM jobs WHERE expires_at<=?)|} [real now];
@@ -247,7 +278,7 @@ let begin_send t outgoing ~floor_seq ~now =
   Sqlite3.changes t.db = 1
 
 let outgoing_state t outgoing ~state ?error () = transaction t (fun () ->
-  run t "UPDATE outbox SET state=?,error=? WHERE id=? AND state NOT IN ('sent','failed','expired','dry_run')"
+  run t "UPDATE outbox SET state=?,error=? WHERE id=? AND state NOT IN ('sent','failed','expired','dry_run','cancelled')"
     [text state; opt_text error; integer outgoing.id];
   let changed = Sqlite3.changes t.db > 0 in
   let job_state = match state with
@@ -279,7 +310,8 @@ let get_embedding t ~source ~room ~key ~model ~content =
        | Error _ -> None)
   | _ -> None
 
-let put_embedding t ~source ~room ~key ~model ~content ~at vector =
+let put_embedding t ~source ~room ~key ~model ~content ~at ~version vector =
+  if room_version t ~source ~room <> version then raise Stale_snapshot;
   if Array.length vector = 0 || not (Array.for_all Float.is_finite vector) then raise (Error "invalid embedding");
   let data = `List (Array.to_list (Array.map (fun value -> `Float value) vector)) in
   run t {|INSERT INTO embeddings VALUES(?,?,?,?,?,?,?) ON CONFLICT(source,room_id,cache_key,model)
@@ -296,7 +328,9 @@ let tokens_today t ~at = count t "SELECT tokens FROM usage WHERE day=?" [integer
 let purge t ~before = transaction t (fun () ->
   let changed = rows t "SELECT DISTINCT source,room_id FROM messages WHERE created_at<?" [real before]
       (fun s -> Sqlite3.column_text s 0, Sqlite3.column_text s 1) in
-  List.iter (fun (source, room) -> invalidate_embeddings t ~source ~room) changed;
+  List.iter (fun (source, room) ->
+    run t "UPDATE rooms SET version=version+1 WHERE source=? AND room_id=?" [text source; text room];
+    invalidate_embeddings t ~source ~room) changed;
   run t "DELETE FROM messages WHERE created_at<?" [real before];
   run t "DELETE FROM embeddings WHERE created_at<?" [real before];
   List.length changed)
@@ -310,3 +344,5 @@ let stats t = `Assoc [
 ]
 
 let recent_outbox t = rows t ("SELECT " ^ outgoing_columns ^ " FROM outbox ORDER BY id DESC LIMIT 20") [] outgoing_row
+
+let last_send_at t = one t "SELECT MAX(attempted_at) FROM outbox" [] (fun s -> optional_float s 0) |> Option.join |> Option.value ~default:0.

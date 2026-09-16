@@ -6,9 +6,14 @@ let apply ~config ~store ~now ~live (message : message) =
   else if message.created_at > now +. 60. then Ignored "future_timestamp"
   else if message.created_at < now -. float_of_int (config.Config.retention_days * 86400) then Ignored "outside_retention"
   else
+    let message = if live then message else
+      match Store.get_message store ~source:message.source ~seq:message.seq with
+      | Some prior when message.sender_name=message.sender_id -> {message with sender_name=prior.sender_name}
+      | _ -> message in
     let invocation = Trigger.detect ~bot_id:config.bot_id ~aliases:config.aliases message in
     Store.transaction store (fun () ->
-      let inserted = Store.put_message store ~is_command:(invocation <> None) message in
+      let stored_message = if message.is_bot then {message with text=""} else message in
+      let inserted = Store.put_message store ~is_command:(invocation <> None) stored_message in
       Store.confirm_message store message;
       let job = if live then Option.map (Store.enqueue store ~now ~config) invocation else None in
       Stored {inserted; job})

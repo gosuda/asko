@@ -19,7 +19,7 @@ let normalize ~source ~bot_id payload = Json_util.protect (fun () ->
     | Some (`String text) -> text
     | _ -> default string "" (field "message" raw)
   in
-  if String.length text > 65536 then invalid "message too large";
+  if String.length text > 65536 || not (String.is_valid_utf_8 text) then invalid "invalid message text";
   let attachment = embedded "attachment" raw in
   let metadata = embedded "v" raw in
   let native_id = optional id (field "id" raw) in
@@ -39,7 +39,7 @@ let normalize ~source ~bot_id payload = Json_util.protect (fun () ->
   in
   let mine = field "isMine" metadata = Some (`Bool true) in
   { source; seq; native_id; room_id; sender_id;
-    sender_name=default string sender_id (field "sender" payload);
+    sender_name=Utf8.take 512 (default string sender_id (field "sender" payload));
     created_at; text; reply_to; mentions;
     is_bot=mine || (bot_id <> "" && sender_id = bot_id);
     deleted=field "deleted" raw = Some (`Bool true) })

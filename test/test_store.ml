@@ -45,7 +45,7 @@ let () =
     Store.recover_jobs db ~now:10021.;
     let recovered = Option.get (Store.claim_job db ~now:10021.) in
     check "job survives process restart" (job.id=recovered.id && recovered.attempts=2);
-    Store.finish_job db recovered ~body:"검증된 요약" ~dry_run:false;
+    Store.finish_job db recovered ~body:"검증된 요약" ~dry_run:false ~snapshot_version:None ~evidence:None;
     let outgoing = Option.get (Store.next_outgoing db ~now:10022.) in
     check "delivery intent persisted before network" (outgoing.body="검증된 요약");
     check "send claim persisted" (Store.begin_send db outgoing ~floor_seq:21L ~now:10022.);
@@ -59,11 +59,14 @@ let () =
     check "later observed bot echo confirms uncertain delivery" ((List.hd (Store.recent_outbox db)).state="sent");
     Store.outgoing_state db outgoing ~state:"awaiting_echo" ();
     check "late HTTP acknowledgement cannot undo a confirmed echo" ((List.hd (Store.recent_outbox db)).state="sent");
-    Store.put_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"old text" ~at:10023. [|1.;0.|];
+    let version = Store.room_version db ~source:"fixture:1" ~room:"a" in
+    Store.put_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"old text" ~at:10023. ~version [|1.;0.|];
     check "embedding cannot cross rooms" (Store.get_embedding db ~source:"fixture:1" ~room:"b" ~key:"k" ~model:"embed" ~content:"old text"=None);
     check "cache hash collision cannot reuse different text" (Store.get_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"changed"=None);
     ignore (Store.put_message db ~is_command:false {prior with deleted=true});
     check "message change invalidates derived embeddings" (Store.get_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"old text"=None);
+    check "in-flight embedding cannot resurrect deleted data"
+      (try Store.put_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"old text" ~at:10024. ~version [|1.;0.|]; false with Store.Stale_snapshot -> true);
     Store.record_tokens db ~at:10023. 100;
     ignore (Store.purge db ~before:10030.);
     check "retention removes source messages" (Store.get_message db ~source:"fixture:1" ~seq:20L=None);

@@ -46,3 +46,7 @@ let observed_reply t ~room ~after ~body =
       Ok (List.find_opt (fun (message : Types.message) -> message.is_bot && message.text = body && message.seq > after) messages)
 
 let configuration t = Net.json ~timeout:t.config.http_timeout `GET (Net.endpoint t.config.iris_url "/config")
+
+let find_anchor t ~room ~native_id ~since =
+  query t "SELECT * FROM chat_logs WHERE chat_id = ? AND id = ? AND created_at >= ? LIMIT 2"
+    [room; native_id; Printf.sprintf "%.0f" since]

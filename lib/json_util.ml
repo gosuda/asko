@@ -9,7 +9,9 @@ let object_ = function
   | _ -> invalid "expected JSON object"
 let field name json = List.assoc_opt name (object_ json)
 let required name json = match field name json with Some value -> value | None -> invalid ("missing " ^ name)
-let string = function `String value -> value | _ -> invalid "expected string"
+let string = function
+  | `String value when String.is_valid_utf_8 value -> value
+  | _ -> invalid "expected UTF-8 string"
 let id = function
   | `String value | `Intlit value ->
       if value = "" || String.length value > 128 || String.exists (fun c -> Char.code c < 32) value
