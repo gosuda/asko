@@ -1,0 +1,4 @@
+(library
+ (name asko)
+ (public_name asko)
+ (libraries unix))

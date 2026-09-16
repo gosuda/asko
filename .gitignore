@@ -1,0 +1,14 @@
+_build/
+_opam/
+.cache/
+.env
+config.local.json
+var/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.merlin
+*.install
+*.cmi
+*.cmx
+*.o
