@@ -1,3 +1,14 @@
 (test
  (name test_core)
+ (modules test_core)
  (libraries asko unix))
+
+(test
+ (name test_store)
+ (modules test_store)
+ (libraries asko unix yojson))
+
+(test
+ (name test_http)
+ (modules test_http)
+ (libraries asko unix yojson lwt.unix))

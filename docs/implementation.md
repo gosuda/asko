@@ -11,7 +11,8 @@
 ## 로컬 커밋 단위
 
 - [x] 호출·범위 도메인, 회귀 테스트 25개, 프로젝트 뼈대
-- [ ] Iris 정규화, SQLite 저장·복구, HTTP 수신과 배포
+- [x] Iris 정규화, SQLite 저장·복구 계약, 루프백 HTTP 수신
+- [ ] 실제 Android 의존성 빌드·배포
 - [ ] OpenRouter 분류·요약·임베딩 검색, 영속 작업 처리
 - [ ] 순차 전송과 오류 처리, 통합 테스트, 운영 문서
 - [ ] Android 의존성 교차 빌드와 실제 폰에서 모의 Iris/LLM 검증
@@ -24,3 +25,9 @@
 - Unix 표준 라이브러리로 만든 서버에서 HTTP GET, 한글 JSON POST, 404를 확인했다.
 - 이 결과는 Cohttp/Lwt·TLS·SQLite 드라이버 조합의 검증을 대신하지 않는다.
 - 이 작업에서는 원격 푸시를 하지 않는다. 작업 브랜치는 `lidarbtc/android-backend`다.
+
+## 진행 중 검증
+
+- 네이티브 도메인·저장·HTTP 검증 61개 통과.
+- Cohttp/Lwt + OCaml TLS로 OpenRouter의 공개 모델 목록을 HTTPS GET하여 HTTP 200 확인. API 키나 대화는 보내지 않았으며 과금 API를 호출하지 않았다.
+- 실제 카카오톡 방의 Iris 이벤트와 OpenRouter 과금 호출은 아직 검증하지 않았다.

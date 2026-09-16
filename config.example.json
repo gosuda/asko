@@ -1,0 +1,16 @@
+{
+  "source_id": "iris:phone:1",
+  "port": 8080,
+  "db_path": "var/asko.sqlite",
+  "iris_url": "http://127.0.0.1:3000",
+  "bot_id": "",
+  "aliases": ["요약봇"],
+  "rooms": [],
+  "dry_run": true,
+  "retention_days": 7,
+  "openrouter_url": "https://openrouter.ai/api/v1",
+  "model": "google/gemini-3.1-flash-lite",
+  "embedding_model": "openai/text-embedding-3-small",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "ingest_token_env": "ASKO_INGEST_TOKEN"
+}
