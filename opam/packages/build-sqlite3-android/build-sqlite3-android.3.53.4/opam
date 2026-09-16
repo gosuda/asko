@@ -1,0 +1,17 @@
+opam-version: "2.0"
+synopsis: "Build a static PIC SQLite library for the Android sysroot"
+maintainer: "asko contributors"
+license: "blessing"
+homepage: "https://www.sqlite.org"
+depends: ["conf-ndk-android" "build-android-sysroot"]
+build: [["sh" "build.sh" "%{conf-ndk-android:prefix}%clang" "%{conf-ndk-android:bindir}%/llvm-ar" "%{build-android-sysroot:prefix}%"]]
+install: [
+  ["install" "-m" "644" "libsqlite3.a" "%{build-android-sysroot:prefix}%/lib/libsqlite3.a"]
+  ["install" "-m" "644" "sqlite3.h" "sqlite3ext.h" "%{build-android-sysroot:prefix}%/include/"]
+  ["install" "-m" "644" "sqlite3.pc" "%{build-android-sysroot:prefix}%/lib/pkgconfig/sqlite3.pc"]
+]
+url {
+  src: "https://www.sqlite.org/2026/sqlite-amalgamation-3530400.zip"
+  checksum: "sha256=1e71ddf93849c6a6ecf58b827c0692073d2dd7ee40196158068f7b29f422e87d"
+}
+extra-files: [["build.sh" "sha256=6864fba934cfaa81f144b945b1158bbc7ee516b43bec2359861dfb3a2f6f2abd"]]

@@ -21,16 +21,35 @@ OCaml로 만드는 카카오톡 오픈채팅 대화 요약 봇. 카카오톡 연
 
 `daily_budget_tokens`는 UTF-8 요청 바이트 수와 최대 출력 토큰을 호출 전에 예약하는 보수적인 일일 예산이다. 실제 청구 토큰이나 금액과 같지 않다. 실패한 요청도 예산을 사용하며, `dry_run`은 카카오톡 송신만 차단한다. 키가 설정되어 있으면 dry-run에서도 모델 호출 요금이 발생할 수 있다.
 
-```sh
-ASKO_OCAMLOPT=/path/to/ocamlopt bash scripts/test-core.sh
+## 호출 예시
+
+```text
+@요약봇 잠깐 못봤는데 뭐 있었음
+@요약봇 오늘 중요한거
+@요약봇 아까 postgres 얘기 결론 뭐임
+[메시지 답장] 여기부터 요약
+/요약 오늘
+/요약 2시간
 ```
 
-일반 개발 환경에서는 OCaml 5.4.1, GMP·SQLite 개발 라이브러리를 준비한 뒤 `opam install . --deps-only`와 `dune build`를 사용한다. 프로젝트 전용 opam 환경을 사용하는 경우 `scripts/dev dune runtest`로 검증한다.
+“못 본 동안”은 이 방에서 사용자의 이전 일반 발언 이후를 뜻한다. 읽음 시각은 추정하지 않는다. 이전 발언이 없으면 최근 1시간으로 제한하고 답변에 표시한다. 답장 요약은 원본 메시지를 포함하며, 모든 범위는 호출 시점에서 끝난다.
+
+## 개발과 배포
+
+```sh
+make setup
+make test
+make setup-android
+make test-android SSH_TARGET=asko-phone
+make deploy SSH_TARGET=asko-phone
+```
+
+Linux x86_64에서 프로젝트 전용 도구와 의존성을 `.cache/`에 설치한다. 일반 opam 환경에서는 OCaml 5.4.1, GMP·SQLite 개발 라이브러리를 준비한 뒤 `opam install . --deps-only --locked`와 `dune build`를 사용한다.
 
 ```sh
 cp config.example.json config.local.json
-dune exec asko -- check-config --config config.local.json
-dune exec asko -- serve --config config.local.json
+./scripts/dev dune exec asko -- check-config --config config.local.json
+./scripts/dev dune exec asko -- serve --config config.local.json
 ```
 
 `status`는 큐 상태를, `outbox`는 최근 결과와 근거 메타데이터를 운영자에게 보여준다. 두 명령도 `--config`를 받는다. 원문 수정·삭제·만료가 반영되면 관련 임베딩과 생성 결과를 무효화한다. 이미 카카오톡에 전송한 메시지를 자동 삭제하는 기능은 없다.
@@ -41,4 +60,4 @@ dune exec asko -- serve --config config.local.json
 
 기본값은 허용 방이 없는 dry-run이다. `rooms`에 방 ID를 넣어야 저장하며, 실제 송신에는 정확한 `bot_id`도 필요하다. `ASKO_INGEST_TOKEN`을 설정하면 Iris 전달 URL의 `token` 쿼리 매개변수 또는 `X-Asko-Token` 헤더가 일치해야 수신한다. 설정되지 않은 경우 루프백 연결을 신뢰하므로 이 기기에서 실행하는 앱도 신뢰하는 구성을 전제로 한다.
 
-개발 순서와 실제 기기 검증 범위는 [구현 계획](docs/implementation.md)에 기록한다. API 키와 실제 대화는 저장소에 커밋하지 않는다.
+폰에서 전체 테스트와 공개 API에 대한 HTTPS 연결을 확인했다. 실제 Iris/카카오톡 송수신과 유료 모델의 요약 품질은 아직 검증하지 않았다. 연결 설정·시작/정지·부팅·백업은 [Android 운영 문서](docs/android.md), 개발 순서와 검증 범위는 [구현 기록](docs/implementation.md)을 참고한다. API 키와 실제 대화는 저장소에 커밋하지 않는다.

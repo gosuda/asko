@@ -1,0 +1,30 @@
+opam-version: "2.0"
+synopsis: "SQLite3 OCaml bindings cross-compiled for Android"
+maintainer: "asko contributors"
+authors: ["Markus Mottl" "Christian Szegedy"]
+license: "MIT"
+homepage: "https://mmottl.github.io/sqlite3-ocaml"
+depends: ["ocaml-android" "dune" {>= "3.18"} "dune-compiledb" "dune-configurator"
+          "dune-configurator-android" "conf-sqlite3-android"]
+patches: ["android-sysroot.patch"]
+build-env: [
+  [ASKO_SQLITE_ANDROID_ROOT = "%{prefix}%/android-sysroot"]
+  [PKG_CONFIG_LIBDIR = "%{prefix}%/android-sysroot/lib/pkgconfig"]
+  [PKG_CONFIG_PATH = ""]
+  [PKG_CONFIG_ALLOW_SYSTEM_LIBS = "1"]
+  [PKG_CONFIG_ALLOW_SYSTEM_CFLAGS = "1"]
+  [C_INCLUDE_PATH = "%{prefix}%/android-sysroot/include"]
+  [LIBRARY_PATH = "%{prefix}%/android-sysroot/lib"]
+  [CPATH = ""]
+]
+build: [
+  ["dune" "build" "-p" "sqlite3" "-j" jobs "-x" "android" "@install"]
+  ["rm" "-f" "sqlite3-android.install"]
+]
+install: [["dune" "install" "-x" "android" "-p" "sqlite3"]]
+remove: [["ocamlfind" "-toolchain" "android" "remove" "sqlite3"]]
+url {
+  src: "https://github.com/mmottl/sqlite3-ocaml/releases/download/5.4.2/sqlite3-5.4.2.tbz"
+  checksum: "sha256=32f68f078f4beaed51ebc279fef46145205fd98cf6c79fe955218601f202621c"
+}
+extra-files: [["android-sysroot.patch" "sha256=1122b6b1fe891937cc57cf339a770d6e3900442479a052551b076c1c386c98f0"]]

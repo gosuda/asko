@@ -1,0 +1,9 @@
+opam-version: "2.0"
+synopsis: "Check the SQLite library built for Android"
+maintainer: "asko contributors"
+license: "Apache-2.0"
+flags: conf
+depends: ["conf-ndk-android" "build-android-sysroot" "build-sqlite3-android"]
+build: [["%{bin}%/android-cross-detect" "%{build-android-sysroot:prefix}%"
+  "%{conf-ndk-android:prefix}%clang" "sqlite3" "-lsqlite3 -lm -ldl" "conf-sqlite3-android.config"]]
+extra-files: [["test.c" "sha256=cb16ecf736c264fd67919cb30f7f33c7eab4064c9ac8599f09fd9b9811e82d43"]]

@@ -2,8 +2,12 @@ _build/
 _opam/
 .cache/
 .env
+.env.*
+!.env.example
+secrets/
 config.local.json
 var/
+dist/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
