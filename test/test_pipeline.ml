@@ -53,6 +53,7 @@ let () =
   insert fixture ~seq:207 ~room:"1002" ~sender:"2002" ~at:(now-.10.) ~text:"PRIVATE_ROOM_SHOULD_NEVER_LEAK" ();
   let chats=ref 0 and embeddings=ref 0 and deliveries=ref [] and contexts=ref [] in
   let bad_citation=ref false and backend_port=ref None in
+  let fail_second_page=ref false in
   let stop,wake_stop=Lwt.wait () and mock_stop,wake_mock=Lwt.wait () in
   let cleanup () =
     Store.close store; ignore (Sqlite3.db_close fixture);
@@ -76,7 +77,9 @@ let () =
       | "/query" ->
           let sql=field "query" json |> Json_util.string in
           let bindings=field "bind" json |> Json_util.list Fun.id in
-          response (`Assoc ["data",`List (raw_query fixture sql bindings)])
+          if !fail_second_page && List.length bindings=5 && List.nth bindings 1=`String "200" then
+            Cohttp_lwt_unix.Server.respond_string ~status:`Service_unavailable ~body:"{}" ()
+          else response (`Assoc ["data",`List (raw_query fixture sql bindings)])
       | "/reply" ->
           let room=field "room" json |> Json_util.string and text=field "data" json |> Json_util.string in
           check "delivery stays in allowed room" (room="1001");
@@ -139,6 +142,37 @@ let () =
       Llm.summarize llm ~intent:(Types.overview Types.Today) ~messages:[m] () >>= fun rejected ->
       bad_citation:=false;
       check "fabricated model evidence rejected over HTTP" (rejected=Error Llm.Bad_response);
+      let iris=Iris.create config in
+      fail_second_page:=true;
+      Recovery.room ~config ~store ~iris "1001" >>= fun interrupted ->
+      check "failed recovery page never advances the cursor"
+        (interrupted=Error (Net.Http_status 503) && Store.cursor store ~source:config.source_id ~room:"1001"=200L);
+      fail_second_page:=false;
+      Recovery.room ~config ~store ~iris "1001" >>= fun resumed ->
+      check "recovery resumes from its last committed page" (Result.is_ok resumed && Store.cursor store ~source:config.source_id ~room:"1001"=206L);
+      let range={Types.source=config.source_id;room_id="1001";lower=Types.At_time(now-.3600.);
+        before_seq=209L;through_time=now;retention_start=now-.86400.;note=None} in
+      let history=Store.messages store range in
+      let version=Store.room_version store ~source:config.source_id ~room:"1001" in
+      Retrieval.select ~config ~store ~llm ~range ~version ~topic:"postgres" ~focus:Types.Conclusions history >>= fun semantic ->
+      check "semantic match works without the literal query keyword"
+        (List.exists (fun (m:Types.message)->m.seq=1L) (Result.get_ok semantic).Retrieval.messages
+         && not (List.exists (fun (m:Types.message)->Retrieval.lexical "postgres" m.text>0.) history));
+      let embedded_before= !embeddings in
+      Retrieval.select ~config ~store ~llm ~range ~version ~topic:"postgres" ~focus:Types.Conclusions history >>= fun _ ->
+      check "cached document embeddings are reused" (!embeddings=embedded_before+1);
+      let dry_store=Store.open_ ":memory:" in
+      let dry_message={m with Types.seq=209L;native_id=Some(native_id 209);text="/요약 도움말";created_at=now} in
+      ignore(Store.put_message dry_store ~is_command:true dry_message);
+      let dry_call={Types.message=dry_message;trigger=Types.Slash;prompt="도움말"} in
+      ignore(Store.enqueue dry_store ~now ~config dry_call);
+      let dry_job=Option.get(Store.claim_job dry_store ~now) in
+      Store.finish_job dry_store dry_job ~body:"must not send" ~dry_run:false ~snapshot_version:None ~evidence:None;
+      let delivered_before=List.length !deliveries in
+      Engine.send_tick (Engine.create {config with dry_run=true} dry_store) >>= fun () ->
+      check "switching to dry-run also blocks previously pending delivery"
+        (List.length !deliveries=delivered_before && (List.hd(Store.recent_outbox dry_store)).state="pending");
+      Store.close dry_store;
       let engine=Engine.create config store in
       running:=Engine.run ~on_ready:(fun port->backend_port:=Some port;Lwt.wakeup_later wake_ready port) ~stop engine;
       ready >>= fun port ->
@@ -164,6 +198,17 @@ let () =
       post 230 >>= fun _ -> wait_sent 3 200 >>= fun () ->
       check "slash request shares the same complete pipeline" (List.length !deliveries=3);
       check "all results observed, never blindly resent" (List.for_all (fun (o:Store.outgoing)->o.state="sent") (Store.recent_outbox store));
+      ignore(Sqlite3.exec fixture "DELETE FROM chat_logs WHERE _id=201");
+      fail_second_page:=true;
+      Recovery.reconcile ~config ~store ~iris "1001" >>= fun incomplete ->
+      check "incomplete reconciliation cannot delete unseen messages"
+        (Result.is_error incomplete && not (Option.get(Store.get_message store ~source:config.source_id ~seq:201L)).Types.deleted);
+      fail_second_page:=false;
+      Recovery.reconcile ~config ~store ~iris "1001" >>= fun reconciled ->
+      check "complete source reconciliation erases missing messages"
+        (Result.is_ok reconciled && (Option.get(Store.get_message store ~source:config.source_id ~seq:201L)).Types.deleted);
+      check "source deletion invalidates stored summary evidence"
+        (List.for_all (fun (o:Store.outgoing)->o.body="" && o.evidence=None) (Store.recent_outbox store));
       Lwt.return_unit)
       (fun () ->
         if Lwt.is_sleeping stop then Lwt.wakeup_later wake_stop ();

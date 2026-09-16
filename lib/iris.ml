@@ -50,3 +50,7 @@ let configuration t = Net.json ~timeout:t.config.http_timeout `GET (Net.endpoint
 let find_anchor t ~room ~native_id ~since =
   query t "SELECT * FROM chat_logs WHERE chat_id = ? AND id = ? AND created_at >= ? LIMIT 2"
     [room; native_id; Printf.sprintf "%.0f" since]
+
+let configure_endpoint t endpoint =
+  Net.json ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.iris_url "/config/endpoint")
+    ~body:(`Assoc ["endpoint",`String endpoint])

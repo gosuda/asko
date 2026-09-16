@@ -17,7 +17,9 @@ let () =
   check "remote plaintext LLM endpoint rejected" (Result.is_error (Config.of_json (`Assoc ["openrouter_url", `String "http://example.com/api"])));
   check "live delivery needs bot ID" (Result.is_error (Config.of_json (`Assoc ["dry_run", `Bool false])));
   let path = Filename.temp_file "asko-test" ".sqlite" in
-  let cleanup () = List.iter (fun p -> try Sys.remove p with Sys_error _ -> ()) [path;path^"-wal";path^"-shm"] in
+  let backup=path^".backup" in
+  let cleanup () = List.iter (fun p -> try Sys.remove p with Sys_error _ -> ())
+    [path;path^"-wal";path^"-shm";backup;backup^"-wal";backup^"-shm"] in
   Fun.protect ~finally:cleanup (fun () ->
     let db = Store.open_ path in
     let prior = message 10L "postgres를 써볼까" in
@@ -28,6 +30,8 @@ let () =
     let call = {message=current; trigger=Slash; prompt=""} in
     check "first insert" (Store.put_message db ~is_command:false prior);
     check "duplicate message idempotent" (not (Store.put_message db ~is_command:false prior));
+    check "native ID reuse cannot overwrite a source generation"
+      (try ignore (Store.put_message db ~is_command:false {prior with native_id=Some "different-native"}); false with Store.Error _->true);
     ignore (Store.put_message db ~is_command:false other);
     ignore (Store.put_message db ~is_command:true current);
     ignore (Store.put_message db ~is_command:false later);
@@ -59,11 +63,20 @@ let () =
     check "later observed bot echo confirms uncertain delivery" ((List.hd (Store.recent_outbox db)).state="sent");
     Store.outgoing_state db outgoing ~state:"awaiting_echo" ();
     check "late HTTP acknowledgement cannot undo a confirmed echo" ((List.hd (Store.recent_outbox db)).state="sent");
+    Store.backup db backup;
+    check "backup never overwrites an existing file"
+      (try Store.backup db backup; false with Unix.Unix_error(Unix.EEXIST,_,_)->true);
     let version = Store.room_version db ~source:"fixture:1" ~room:"a" in
     Store.put_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"old text" ~at:10023. ~version [|1.;0.|];
     check "embedding cannot cross rooms" (Store.get_embedding db ~source:"fixture:1" ~room:"b" ~key:"k" ~model:"embed" ~content:"old text"=None);
     check "cache hash collision cannot reuse different text" (Store.get_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"changed"=None);
     ignore (Store.put_message db ~is_command:false {prior with deleted=true});
+    check "deleted content is erased" ((Option.get (Store.get_message db ~source:"fixture:1" ~seq:10L)).Types.text="");
+    ignore (Store.put_message db ~is_command:false prior);
+    check "late duplicate cannot resurrect a tombstone" ((Option.get (Store.get_message db ~source:"fixture:1" ~seq:10L)).Types.deleted);
+    let snapshot=Store.open_ backup in
+    check "backup is an independent consistent snapshot" ((Option.get (Store.get_message snapshot ~source:"fixture:1" ~seq:10L)).Types.text=prior.text);
+    Store.close snapshot;
     check "message change invalidates derived embeddings" (Store.get_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"old text"=None);
     check "in-flight embedding cannot resurrect deleted data"
       (try Store.put_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"old text" ~at:10024. ~version [|1.;0.|]; false with Store.Stale_snapshot -> true);

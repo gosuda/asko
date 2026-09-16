@@ -9,6 +9,7 @@ type t = {
   dry_run : bool;
   retention_days : int;
   recovery_interval : float;
+  reconcile_interval : float;
   request_ttl : float;
   cooldown : float;
   http_timeout : float;
@@ -30,7 +31,7 @@ type t = {
 let default = {
   source_id="iris:phone:1"; port=8080; db_path="var/asko.sqlite";
   iris_url="http://127.0.0.1:3000"; bot_id=""; aliases=["요약봇"]; rooms=[];
-  dry_run=true; retention_days=7; recovery_interval=30.; request_ttl=300.;
+  dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=300.;
   cooldown=20.; http_timeout=45.; send_interval=1.; confirm_timeout=15.;
   max_input_bytes=240000; max_history_bytes=2000000; max_response_bytes=7000; max_output_tokens=1800; daily_budget_tokens=500000;
   openrouter_url="https://openrouter.ai/api/v1";
@@ -55,6 +56,7 @@ let of_json json = Json_util.protect (fun () ->
     rooms=strings "rooms" d.rooms; dry_run=b "dry_run" d.dry_run;
     retention_days=i "retention_days" d.retention_days;
     recovery_interval=f "recovery_interval" d.recovery_interval;
+    reconcile_interval=f "reconcile_interval" d.reconcile_interval;
     request_ttl=f "request_ttl" d.request_ttl; cooldown=f "cooldown" d.cooldown;
     http_timeout=f "http_timeout" d.http_timeout;
     send_interval=f "send_interval" d.send_interval;
@@ -73,7 +75,7 @@ let of_json json = Json_util.protect (fun () ->
   if c.port < 1024 || c.port > 65535 then invalid "port must be 1024..65535";
   if c.source_id = "" || c.db_path = "" then invalid "source_id and db_path are required";
   if c.retention_days < 1 || c.retention_days > 90 then invalid "retention_days must be 1..90";
-  if c.request_ttl <= 0. || c.http_timeout <= 0. || c.recovery_interval < 1.
+  if c.request_ttl <= 0. || c.http_timeout <= 0. || c.recovery_interval < 1. || c.reconcile_interval < 60.
      || c.send_interval < 0.2 || c.cooldown < 0. || c.confirm_timeout <= 0.
   then invalid "invalid timing configuration";
   if c.max_input_bytes < 1000 || c.max_input_bytes > 2000000
@@ -96,7 +98,11 @@ let of_json json = Json_util.protect (fun () ->
   c)
 
 let load path =
-  try of_json (Yojson.Safe.from_file path) with
+  try match of_json (Yojson.Safe.from_file path) with
+    | Ok config when Filename.is_relative config.db_path ->
+        Ok {config with db_path=Filename.concat (Filename.dirname path) config.db_path}
+    | result -> result
+  with
   | Sys_error _ -> Error "cannot read configuration file"
   | Yojson.Json_error _ -> Error "invalid configuration JSON"
 let allowed config room = List.mem room config.rooms

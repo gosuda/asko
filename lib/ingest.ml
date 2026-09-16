@@ -5,6 +5,8 @@ let apply ~config ~store ~now ~live (message : message) =
   if not (Config.allowed config message.room_id) then Ignored "room_not_allowed"
   else if message.created_at > now +. 60. then Ignored "future_timestamp"
   else if message.created_at < now -. float_of_int (config.Config.retention_days * 86400) then Ignored "outside_retention"
+  else if (match Store.get_message store ~source:message.source ~seq:message.seq with
+    | Some prior -> prior.deleted && not message.deleted | None -> false) then Ignored "message_deleted"
   else
     let message = if live then message else
       match Store.get_message store ~source:message.source ~seq:message.seq with

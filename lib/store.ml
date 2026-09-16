@@ -133,13 +133,17 @@ let room_version t ~source ~room =
   count t "SELECT version FROM rooms WHERE source=? AND room_id=?" [text source; text room]
 
 let put_message t ~is_command (message : message) =
+  let message=if message.deleted then {message with text=""} else message in
   let old = get_message t ~source:message.source ~seq:message.seq in
   (match old with
-   | Some old when old.room_id <> message.room_id || old.sender_id <> message.sender_id ->
+   | Some old when old.room_id <> message.room_id || old.sender_id <> message.sender_id
+                   || (match old.native_id,message.native_id with Some a,Some b -> a<>b | _ -> false) ->
        raise (Error "source sequence collision; verify source generation")
    | _ -> ());
   let old_command = one t "SELECT is_command FROM messages WHERE source=? AND seq=?"
       [text message.source; integer message.seq] (fun s -> Sqlite3.column_bool s 0) in
+  let is_command=is_command || old_command=Some true in
+  if (match old with Some old -> old.deleted && not message.deleted | None->false) then false else begin
   if old <> Some message || old_command <> Some is_command then begin
     run t {|INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(source,seq) DO UPDATE SET native_id=excluded.native_id,
@@ -158,6 +162,7 @@ let put_message t ~is_command (message : message) =
     end
   end;
   old = None
+  end
 
 let previous t (request : message) =
   one t ("SELECT " ^ message_columns ^ {| FROM messages WHERE source=? AND room_id=?
@@ -346,3 +351,17 @@ let stats t = `Assoc [
 let recent_outbox t = rows t ("SELECT " ^ outgoing_columns ^ " FROM outbox ORDER BY id DESC LIMIT 20") [] outgoing_row
 
 let last_send_at t = one t "SELECT MAX(attempted_at) FROM outbox" [] (fun s -> optional_float s 0) |> Option.join |> Option.value ~default:0.
+
+let mark_missing t ~source ~room ~since ~through seen = transaction t (fun () ->
+  let candidates=rows t ("SELECT " ^ message_columns ^ ",is_command FROM messages WHERE source=? AND room_id=? AND created_at>=? AND seq<=? AND deleted=0")
+      [text source;text room;real since;integer through] (fun s->message_row s,Sqlite3.column_bool s 12) in
+  List.iter (fun ((message:message),is_command) ->
+    if not (Hashtbl.mem seen message.seq) then
+      ignore (put_message t ~is_command {message with text="";deleted=true})) candidates)
+
+let backup t destination =
+  mkdir (Filename.dirname destination);
+  let fd=Unix.openfile destination [Unix.O_CREAT;Unix.O_EXCL;Unix.O_WRONLY;Unix.O_CLOEXEC] 0o600 in
+  Unix.close fd;
+  try run t "VACUUM INTO ?" [text destination]
+  with exn -> (try Sys.remove destination with Sys_error _->()); raise exn

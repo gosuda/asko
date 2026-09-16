@@ -8,6 +8,7 @@ let room ~config ~store ~iris ?through room =
   | Ok (latest, coverage_start) ->
       let upper = match through with None -> latest | Some upper -> min upper latest in
       let initial = Store.cursor store ~source:config.source_id ~room in
+      if latest < initial then Lwt.return (Error Net.Source_changed) else
       let rec loop after =
         if after >= upper then Lwt.return (Ok ())
         else Iris.page iris ~room ~after ~through:upper ~since >>= function
@@ -34,5 +35,39 @@ let room ~config ~store ~iris ?through room =
       loop initial >|= fun result ->
       (match result with
        | Ok () -> Store.save_cursor store ~source:config.source_id ~room ~cursor:upper ~at:now ~coverage_start
+       | Error _ -> ());
+      result
+
+let reconcile ~config ~store ~iris room =
+  if not (Config.allowed config room) then Lwt.return (Error (Net.Http_status 403)) else
+  let now=Unix.gettimeofday () in
+  let since=now -. float_of_int (config.Config.retention_days*86400) in
+  Iris.latest iris room >>= function
+  | Error error -> Lwt.return (Error error)
+  | Ok (upper,_) when upper < Store.cursor store ~source:config.source_id ~room ->
+      Lwt.return (Error Net.Source_changed)
+  | Ok (upper,_) ->
+      let seen=Hashtbl.create 1024 in
+      let rec scan after =
+        if after>=upper then Lwt.return (Ok ()) else
+        Iris.page iris ~room ~after ~through:upper ~since >>= function
+        | Error error -> Lwt.return (Error error)
+        | Ok [] -> Lwt.return (Ok ())
+        | Ok rows ->
+            let decoded=List.map (Iris_event.of_query_row ~source:config.source_id ~bot_id:config.bot_id) rows in
+            if List.exists Result.is_error decoded then Lwt.return (Error Net.Invalid_json) else
+            let messages=List.map Result.get_ok decoded in
+            if List.exists (fun (m:Types.message)->m.room_id<>room || m.seq<=after || m.seq>upper) messages then
+              Lwt.return (Error Net.Invalid_json)
+            else begin
+              List.iter (fun (m:Types.message)->
+                Hashtbl.replace seen m.seq ();
+                ignore (Ingest.apply ~config ~store ~now ~live:false m)) messages;
+              let next=List.fold_left (fun seq (m:Types.message)->max seq m.seq) after messages in
+              Lwt.pause () >>= fun ()->scan next
+            end in
+      scan 0L >|= fun result ->
+      (match result with
+       | Ok () -> Store.mark_missing store ~source:config.source_id ~room ~since ~through:upper seen
        | Error _ -> ());
       result

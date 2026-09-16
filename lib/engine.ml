@@ -45,6 +45,9 @@ let resolve_anchor t request since =
 let summarize t (job:Store.job) intent =
   let request=job.invocation.message in
   recover t ~through:request.seq request.room_id >>= fun recovery ->
+  if recovery=Error Net.Source_changed then
+    (log "source_changed" "change_source_generation";
+     finish t job "대화 연결 상태를 다시 확인해야 해요. 잠시 후 다시 불러주세요.") else
   let since=Unix.gettimeofday () -. float_of_int (t.config.retention_days*86400) in
   resolve_anchor t request since >>= fun () ->
   let previous=Store.previous t.store request and anchor=Store.anchor t.store request in
@@ -155,8 +158,12 @@ let run ?on_ready ~stop t =
   let maintenance () =
     ignore (Store.purge t.store ~before:(Unix.gettimeofday () -. float_of_int (t.config.retention_days*86400)));
     Lwt.return_unit in
+  let reconcile () = Lwt_list.iter_s (fun room ->
+    Lwt_mutex.with_lock t.recovery_lock (fun () -> Recovery.reconcile ~config:t.config ~store:t.store ~iris:t.iris room)
+    >|= function Ok ()->() | Error error->log "reconcile_failed" (Net.error_name error)) t.config.rooms in
   let workers=[supervise "job_worker" jobs 0.2 (); supervise "sender" (fun ()->send_tick t) 0.5 ();
-               supervise "recovery" recovery t.config.recovery_interval (); supervise "retention" maintenance 60. ()] in
+               supervise "recovery" recovery t.config.recovery_interval (); supervise "retention" maintenance 60. ();
+               (Lwt_unix.sleep t.config.reconcile_interval >>= supervise "reconcile" reconcile t.config.reconcile_interval)] in
   Lwt.finalize
     (fun () -> Server.run ?on_ready ~stop t.config t.store)
     (fun () -> List.iter Lwt.cancel workers;
