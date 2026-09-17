@@ -54,7 +54,7 @@ Consecutive requests are queued with no default cooldown. The first configuratio
 
 ## Credentials and rooms
 
-Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. The default model is [DeepSeek V4.1 Flash](https://openrouter.ai/deepseek/deepseek-v4.1-flash) with `reasoning_enabled=true`. A 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) is added to the response allowance. The conversation loop uses tool calling; `response_format` is used only by the older summary helpers.
+Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. The default model is [Gemini 3.5 Flash Lite](https://openrouter.ai/google/gemini-3.5-flash-lite) with `reasoning_enabled=true`. A 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) is added to the response allowance. The conversation loop uses tool calling; `response_format` is used only by the older summary helpers.
 
 You can also keep the key in a separate file. From a Bash session on the phone:
 

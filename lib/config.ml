@@ -39,7 +39,7 @@ let default = {
   cooldown=0.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
   max_input_bytes=240000; max_history_bytes=2000000; max_response_bytes=7000; max_output_tokens=1800; daily_budget_tokens=500000;
   openrouter_url="https://openrouter.ai/api/v1";
-  model="deepseek/deepseek-v4.1-flash"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_object";
+  model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_object";
   embedding_model="jina-v5-nano-retrieval-q8"; embedding_url="http://127.0.0.1:8081/v1";
   api_key=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
   allow_insecure_loopback=false;
