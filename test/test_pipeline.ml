@@ -67,8 +67,8 @@ let () =
     let config={Config.default with source_id="pipeline:1"; port=0; db_path=path;
       iris_url=base;openrouter_url=base^"/api/v1";bot_id="9999";rooms=["1001"];
       cooldown=0.;dry_run=false;recovery_interval=1.;send_interval=0.2;confirm_timeout=2.;
-      api_key_env="ASKO_PIPELINE_KEY";ingest_token_env="ASKO_PIPELINE_TOKEN";allow_insecure_loopback=true} in
-    Unix.putenv config.api_key_env "not-a-real-key"; Unix.putenv config.ingest_token_env "test-ingress";
+      api_key="not-a-real-key";api_key_env="ASKO_PIPELINE_KEY";ingest_token_env="ASKO_PIPELINE_TOKEN";allow_insecure_loopback=true} in
+    Unix.putenv config.api_key_env ""; Unix.putenv config.ingest_token_env "test-ingress";
     let callback _ request body =
       Net.read_body ~limit:1048576 body >>= fun raw ->
       let json=if raw="" then `Null else Yojson.Safe.from_string raw in
@@ -105,9 +105,20 @@ let () =
           check "chat authentication uses configured key"
             (Cohttp.Header.get (Cohttp.Request.headers request) "authorization"=Some "Bearer not-a-real-key");
           check "configured model selected" (field "model" json=`String config.model);
-          let name=field "response_format" json |> field "json_schema" |> field "name" |> Json_util.string in
+          check "reasoning explicitly disabled in chat requests"
+            (field "reasoning" json=`Assoc ["enabled",`Bool false]);
           let payload=field "messages" json |> Json_util.list Fun.id |> List.rev |> List.hd
             |> field "content" |> Json_util.string |> Yojson.Safe.from_string in
+          let format=field "response_format" json in
+          let name=match field "type" format with
+            | `String "json_object" ->
+                check "JSON mode does not send unsupported schema parameters" (format=`Assoc ["type",`String "json_object"]);
+                let system=field "messages" json |> Json_util.list Fun.id |> List.hd |> field "content" |> Json_util.string in
+                check "JSON mode includes the output contract in system instructions"
+                  (Retrieval.contains system "\"additionalProperties\":false" && Retrieval.contains system "\"required\"");
+                if Json_util.field "request" payload<>None then "asko_intent" else "asko_summary"
+            | `String "json_schema" -> field "json_schema" format |> field "name" |> Json_util.string
+            | _ -> failwith "unsupported response format" in
           check "other-room contents never reach model" (not (Retrieval.contains (Json_util.to_string payload) "PRIVATE_ROOM_SHOULD_NEVER_LEAK"));
           let answer=if name="asko_intent" then Yojson.Safe.from_string
               {|{"action":"summarize","scope":"recent","minutes":null,"topic":"postgres","focus":"conclusions","question":null}|}
@@ -129,7 +140,7 @@ let () =
       let llm=Llm.create config store in
       Llm.embed llm ["postgres";"banana"] >>= fun vectors ->
       check "embedding response indices reordered correctly" (vectors=Ok [[|1.;0.|];[|0.;1.|]]);
-      let absent=Llm.create {config with api_key_env="ASKO_ABSENT_KEY"} store in
+      let absent=Llm.create {config with api_key="";api_key_env="ASKO_ABSENT_KEY"} store in
       Unix.putenv "ASKO_ABSENT_KEY" "";
       Llm.embed absent ["x"] >>= fun absent_result ->
       check "missing API key fails locally" (absent_result=Error Llm.Not_configured);
@@ -142,6 +153,9 @@ let () =
       Llm.summarize llm ~intent:(Types.overview Types.Today) ~messages:[m] () >>= fun rejected ->
       bad_citation:=false;
       check "fabricated model evidence rejected over HTTP" (rejected=Error Llm.Bad_response);
+      Llm.summarize (Llm.create {config with response_format="json_schema"} store)
+        ~intent:(Types.overview Types.Today) ~messages:[m] () >>= fun strict ->
+      check "schema-capable models retain strict output support" (Result.is_ok strict);
       let iris=Iris.create config in
       fail_second_page:=true;
       Recovery.room ~config ~store ~iris "1001" >>= fun interrupted ->

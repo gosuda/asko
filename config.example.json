@@ -9,8 +9,11 @@
   "dry_run": true,
   "retention_days": 7,
   "openrouter_url": "https://openrouter.ai/api/v1",
-  "model": "google/gemini-3.1-flash-lite",
+  "model": "qwen/qwen3.7-flash",
+  "reasoning_enabled": false,
+  "response_format": "json_object",
   "embedding_model": "openai/text-embedding-3-small",
+  "api_key": "",
   "api_key_env": "OPENROUTER_API_KEY",
   "ingest_token_env": "ASKO_INGEST_TOKEN"
 }

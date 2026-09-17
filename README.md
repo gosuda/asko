@@ -8,10 +8,10 @@ OCaml로 만드는 카카오톡 오픈채팅 대화 요약 봇. 카카오톡 연
 
 - HTTP: Cohttp/Lwt
 - 저장: SQLite. 방과 데이터 소스별로 분리해 조회한다.
-- LLM: OpenRouter. 기본 모델은 `google/gemini-3.1-flash-lite`이며 설정으로 교체한다.
+- LLM: OpenRouter. 기본 모델은 `qwen/qwen3.7-flash`이며 설정으로 교체한다.
 - UI: 카카오톡. 운영용 CLI와 설정 파일만 제공한다.
 
-모델 기본값은 2026-09-16 기준 1M 컨텍스트와 입력/출력 100만 토큰당 $0.25/$1.50인 [Gemini 3.1 Flash Lite](https://openrouter.ai/google/gemini-3.1-flash-lite)를 선택했다. 가격은 코드의 과금 보장값으로 사용하지 않는다.
+기본값은 [Qwen3.7 Flash](https://openrouter.ai/qwen/qwen3.7-flash), 추론 비활성화(`reasoning_enabled=false`)다. 이 모델은 JSON 모드를 지원하지만 JSON 스키마 강제는 지원하지 않으므로 `response_format=json_object`로 요청하고 OCaml에서 응답 형식과 근거를 검사한다. 스키마를 지원하는 다른 모델을 쓸 때는 `json_schema`로 바꿀 수 있다. 추론 설정은 OpenRouter의 [reasoning 옵션](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)에 전달한다.
 
 ## 현재 구현
 
@@ -51,6 +51,8 @@ cp config.example.json config.local.json
 ./scripts/dev dune exec asko -- check-config --config config.local.json
 ./scripts/dev dune exec asko -- serve --config config.local.json
 ```
+
+OpenRouter 키는 `config.local.json`의 `api_key`에 넣는다. 비어 있지 않은 `OPENROUTER_API_KEY` 환경변수가 있으면 그 값이 우선한다. `config.local.json`은 Git에서 제외하며 `chmod 600 config.local.json`으로 접근 권한을 제한한다. `check-config`는 키 자체 대신 설정 여부만 표시한다. 폰에서 실행할 때는 폰의 `~/asko/config.local.json`에 설정한다. 일반 배포는 기존 설정을 보존하므로 PC의 로컬 설정을 자동 복사하지 않는다.
 
 `status`는 큐 상태를, `outbox`는 최근 결과와 근거 메타데이터를 운영자에게 보여준다. 두 명령도 `--config`를 받는다. 원문 수정·삭제·만료가 반영되면 관련 임베딩과 생성 결과를 무효화한다. 이미 카카오톡에 전송한 메시지를 자동 삭제하는 기능은 없다.
 

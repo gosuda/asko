@@ -22,7 +22,10 @@ type t = {
   daily_budget_tokens : int;
   openrouter_url : string;
   model : string;
+  reasoning_enabled : bool;
+  response_format : string;
   embedding_model : string;
+  api_key : string;
   api_key_env : string;
   ingest_token_env : string;
   allow_insecure_loopback : bool;
@@ -35,9 +38,9 @@ let default = {
   cooldown=20.; http_timeout=45.; send_interval=1.; confirm_timeout=15.;
   max_input_bytes=240000; max_history_bytes=2000000; max_response_bytes=7000; max_output_tokens=1800; daily_budget_tokens=500000;
   openrouter_url="https://openrouter.ai/api/v1";
-  model="google/gemini-3.1-flash-lite";
+  model="qwen/qwen3.7-flash"; reasoning_enabled=false; response_format="json_object";
   embedding_model="openai/text-embedding-3-small";
-  api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
+  api_key=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
   allow_insecure_loopback=false;
 }
 
@@ -68,12 +71,17 @@ let of_json json = Json_util.protect (fun () ->
     daily_budget_tokens=i "daily_budget_tokens" d.daily_budget_tokens;
     openrouter_url=s "openrouter_url" d.openrouter_url;
     model=s "model" d.model; embedding_model=s "embedding_model" d.embedding_model;
+    reasoning_enabled=b "reasoning_enabled" d.reasoning_enabled;
+    response_format=s "response_format" d.response_format;
+    api_key=String.trim (s "api_key" d.api_key);
     api_key_env=s "api_key_env" d.api_key_env;
     ingest_token_env=s "ingest_token_env" d.ingest_token_env;
     allow_insecure_loopback=b "allow_insecure_loopback" d.allow_insecure_loopback;
   } in
   if c.port < 1024 || c.port > 65535 then invalid "port must be 1024..65535";
   if c.source_id = "" || c.db_path = "" then invalid "source_id and db_path are required";
+  if not (List.mem c.response_format ["json_object"; "json_schema"])
+  then invalid "response_format must be json_object or json_schema";
   if c.retention_days < 1 || c.retention_days > 90 then invalid "retention_days must be 1..90";
   if c.request_ttl <= 0. || c.http_timeout <= 0. || c.recovery_interval < 1. || c.reconcile_interval < 60.
      || c.send_interval < 0.2 || c.cooldown < 0. || c.confirm_timeout <= 0.
@@ -109,5 +117,7 @@ let allowed config room = List.mem room config.rooms
 let env_value name = match Sys.getenv_opt name with
   | Some value when String.trim value <> "" -> Some (String.trim value)
   | _ -> None
-let api_key config = env_value config.api_key_env
+let api_key config = match env_value config.api_key_env with
+  | Some _ as value -> value
+  | None -> let value=String.trim config.api_key in if value="" then None else Some value
 let ingest_token config = env_value config.ingest_token_env

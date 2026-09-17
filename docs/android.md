@@ -40,7 +40,9 @@ make deploy SSH_TARGET=asko-phone
 
 ## OpenRouter와 테스트 방 연결
 
-OpenRouter 키는 폰의 `~/asko/secrets/openrouter.key` 한 줄에 넣는다. SSH로 접속한 Bash에서 다음처럼 입력하면 화면에 키를 표시하지 않는다.
+폰의 `~/asko/config.local.json`에서 `api_key`에 OpenRouter 키를 넣는다. 기본 모델은 `qwen/qwen3.7-flash`, `reasoning_enabled`는 `false`, `response_format`은 `json_object`다. 설정 파일은 600 권한으로 유지하며 `check-config`는 키의 존재 여부만 출력한다. PC에서 만든 `config.local.json`은 일반 배포로 자동 전송하지 않는다.
+
+키를 별도 파일에 두려면 기존 방식도 사용할 수 있다. SSH로 접속한 Bash에서 다음처럼 입력한다.
 
 ```sh
 cd ~/asko
@@ -50,7 +52,7 @@ printf '%s\n' "$asko_key" > secrets/openrouter.key
 unset asko_key
 ```
 
-이 값은 로그나 DB에 저장하지 않는다. `run-phone.sh`가 `OPENROUTER_API_KEY`로 전달한다. 키를 채팅이나 커밋에 넣지 않는다.
+`run-phone.sh`가 이 파일을 `OPENROUTER_API_KEY` 환경변수로 전달한다. 비어 있지 않은 환경변수는 설정 파일의 `api_key`보다 우선한다. 키는 로그나 DB에 저장하지 않으며 채팅이나 커밋에 넣지 않는다.
 
 Iris 설치와 실행은 [Iris 공식 절차](https://github.com/dolidolih/Iris#시작하기)를 따른다. Iris의 `/query`·`/reply`·설정 API는 이 폰의 asko가 접근하는 용도다. 현재 Iris 서버의 외부 인터페이스 바인딩을 확인하고 운영 전에 접근을 제한해야 한다. 이번 구현 검증에서는 실제 Iris 설치나 네트워크 설정을 변경하지 않았다.
 

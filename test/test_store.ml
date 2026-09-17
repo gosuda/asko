@@ -16,6 +16,17 @@ let () =
   check "duplicate JSON fields rejected" (Result.is_error (Config.of_json (`Assoc ["port",`Int 8000; "port",`Int 9000])));
   check "remote plaintext LLM endpoint rejected" (Result.is_error (Config.of_json (`Assoc ["openrouter_url", `String "http://example.com/api"])));
   check "live delivery needs bot ID" (Result.is_error (Config.of_json (`Assoc ["dry_run", `Bool false])));
+  let key_config=Config.of_json (`Assoc ["api_key",`String "  fake-config-key  ";
+    "api_key_env",`String "ASKO_CONFIG_TEST_KEY"]) |> Result.get_ok in
+  Unix.putenv key_config.api_key_env "";
+  check "configuration file supplies API key" (Config.api_key key_config=Some "fake-config-key");
+  Unix.putenv key_config.api_key_env "fake-env-key";
+  check "environment key overrides configuration key" (Config.api_key key_config=Some "fake-env-key");
+  Unix.putenv key_config.api_key_env "";
+  check "blank credentials are not configured" (Config.api_key {key_config with api_key="  "}=None);
+  check "API key must be a string" (Result.is_error (Config.of_json (`Assoc ["api_key",`Int 7])));
+  check "reasoning flag must be a boolean" (Result.is_error (Config.of_json (`Assoc ["reasoning_enabled",`String "false"])));
+  check "unsupported output mode rejected" (Result.is_error (Config.of_json (`Assoc ["response_format",`String "text"])));
   let path = Filename.temp_file "asko-test" ".sqlite" in
   let backup=path^".backup" in
   let cleanup () = List.iter (fun p -> try Sys.remove p with Sys_error _ -> ())

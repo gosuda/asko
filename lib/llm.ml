@@ -65,15 +65,23 @@ let call t ~output_tokens ~path body =
       end
 
 let chat t ~name ~schema ~system ~user ~max_tokens =
+  let system, response_format =
+    if t.config.response_format="json_object" then
+      (* Qwen3.7 Flash supports JSON mode, but not provider-enforced JSON Schema.
+         Keep the output contract in the trusted prompt and validate locally. *)
+      system ^ "\n\nReturn one JSON object without markdown. Follow this JSON schema ("
+        ^ name ^ ") exactly:\n" ^ Json_util.to_string schema,
+      `Assoc ["type", `String "json_object"]
+    else system, `Assoc ["type", `String "json_schema";"json_schema",`Assoc [
+      "name",`String name;"strict",`Bool true;"schema",schema]] in
   let body = `Assoc [
     "model", `String t.config.model; "stream", `Bool false; "temperature", `Float 0.1;
-    "max_tokens", `Int max_tokens; "reasoning", `Assoc ["effort", `String "minimal"];
+    "max_tokens", `Int max_tokens; "reasoning", `Assoc ["enabled", `Bool t.config.reasoning_enabled];
     "provider", `Assoc ["require_parameters", `Bool true; "data_collection", `String "deny"];
     "messages", `List [
       `Assoc ["role",`String "system";"content",`String system];
       `Assoc ["role",`String "user";"content",`String (Json_util.to_string user)]];
-    "response_format", `Assoc ["type",`String "json_schema";"json_schema",`Assoc [
-      "name",`String name;"strict",`Bool true;"schema",schema]];
+    "response_format", response_format;
   ] in
   call t ~output_tokens:max_tokens ~path:"/chat/completions" body >|= function
   | Error error -> Error error
