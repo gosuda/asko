@@ -6,6 +6,8 @@ The backend, SQLite database, and Jina embedding server run on a rooted Android 
 
 ## Use
 
+Consecutive requests are queued with no default cooldown.
+
 Select the bot account in KakaoTalk's mention picker. Typing its name as plain text does not invoke it.
 
 ```text

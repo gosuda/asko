@@ -213,17 +213,21 @@ let enqueue t ~now ~(config : Config.t) (invocation : invocation) =
   if count t "SELECT COUNT(*) FROM jobs WHERE source=? AND request_seq=?" [text message.source; integer message.seq] > 0
   then Duplicate
   else if message.created_at < now -. config.request_ttl || message.created_at > now +. 60. then Stale
-  else if count t {|SELECT COUNT(*) FROM jobs j JOIN messages m ON m.source=j.source AND m.seq=j.request_seq
-    WHERE j.source=? AND m.room_id=? AND m.sender_id=? AND j.created_at>?
-    AND j.state NOT IN ('failed','expired')|}
-      [text message.source; text message.room_id; text message.sender_id; real (now -. config.cooldown)] > 0
-    || count t "SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running','awaiting_send')" [] >= 100
+  else if count t "SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running','awaiting_send')" [] >= 100
   then Rate_limited
   else begin
+    let previous=one t {|SELECT MAX(j.available_at) FROM jobs j JOIN messages m
+      ON m.source=j.source AND m.seq=j.request_seq WHERE j.source=? AND m.room_id=?
+      AND m.sender_id=? AND j.state NOT IN ('failed','expired')|}
+      [text message.source;text message.room_id;text message.sender_id]
+      (fun s->optional_float s 0) |> Option.join in
+    let available_at=match previous with
+      | None->now
+      | Some at->max now (min (at+.config.cooldown) (now+.config.request_ttl/.2.)) in
     run t {|INSERT INTO jobs(source,request_seq,trigger,prompt,created_at,available_at,expires_at)
       VALUES(?,?,?,?,?,?,?)|}
       [text message.source; integer message.seq; text (trigger_name invocation.trigger); text invocation.prompt;
-       real now; real now; real (now +. config.request_ttl)];
+       real now; real available_at; real (now +. config.request_ttl)];
     Queued (Sqlite3.last_insert_rowid t.db)
   end
 

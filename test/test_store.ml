@@ -27,6 +27,27 @@ let () =
   check "API key must be a string" (Result.is_error (Config.of_json (`Assoc ["api_key",`Int 7])));
   check "reasoning flag must be a boolean" (Result.is_error (Config.of_json (`Assoc ["reasoning_enabled",`String "false"])));
   check "unsupported output mode rejected" (Result.is_error (Config.of_json (`Assoc ["response_format",`String "text"])));
+  let check_followup cooldown =
+    let db=Store.open_ ":memory:" in
+    Fun.protect ~finally:(fun ()->Store.close db) (fun () ->
+      let config={Config.default with cooldown;rooms=["a"]} in
+      let call seq =
+        let message={(message seq "오늘 대화 정리해줘") with mentions=["bot"]} in
+        ignore(Store.put_message db ~is_command:true message);
+        {message;trigger=Mention;prompt=message.text} in
+      ignore(Store.enqueue db ~now:10010. ~config (call 1L));
+      let first=Option.get(Store.claim_job db ~now:10010.) in
+      Store.finish_job db first ~body:"done" ~dry_run:true ~snapshot_version:None ~evidence:None;
+      check "follow-up is queued instead of silently discarded"
+        (match Store.enqueue db ~now:10011. ~config (call 2L) with Store.Queued _->true | _->false);
+      if cooldown=0. then
+        check "default follow-up is immediately available" (Option.is_some(Store.claim_job db ~now:10011.))
+      else begin
+        check "configured cooldown delays an accepted job" (Store.claim_job db ~now:10011.=None);
+        check "delayed follow-up remains available" (Option.is_some(Store.claim_job db ~now:10030.))
+      end) in
+  check_followup Config.default.cooldown;
+  check_followup 20.;
   let path = Filename.temp_file "asko-test" ".sqlite" in
   let backup=path^".backup" in
   let cleanup () = List.iter (fun p -> try Sys.remove p with Sys_error _ -> ())

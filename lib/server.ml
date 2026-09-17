@@ -41,7 +41,14 @@ let callback config store _connection request body =
         | Ok json ->
             (match Ingest.event ~config ~store ~now:(Unix.gettimeofday ()) json with
              | Error _ -> error `Bad_request "invalid_event"
-             | Ok result -> response `Accepted (Ingest.json result)))
+             | Ok result ->
+                 let receipt=Ingest.json result in
+                 (match Json_util.field "job_state" receipt with
+                  | Some (`String state) when state<>"not_requested" ->
+                      prerr_endline (Json_util.to_string (`Assoc ["event",`String "invocation";
+                        "state",`String state;"job_id",Option.value ~default:`Null (Json_util.field "job_id" receipt)]))
+                  | _ -> ());
+                 response `Accepted receipt))
         (function
           | Net.Limit_exceeded -> error `Request_entity_too_large "body_too_large"
           | Lwt_unix.Timeout -> error `Request_timeout "body_timeout"
