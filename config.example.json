@@ -18,5 +18,6 @@
   "reasoning_max_tokens": 2048,
   "embedding_url": "https://openrouter.ai/api/v1",
   "http_timeout": 120,
-  "cooldown": 0
+  "cooldown": 0,
+  "daily_budget_tokens": 50000000
 }
