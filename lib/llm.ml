@@ -62,7 +62,7 @@ let turn t ~messages ~tools =
     else `Assoc ["enabled",`Bool false] in
   let body=`Assoc ["model",`String t.config.model;"messages",`List messages;
     "tools",`List tools;"tool_choice",`String "auto";
-    "max_tokens",`Int output;"reasoning",reasoning;"temperature",`Float 0.1;
+    "max_tokens",`Int output;"reasoning",reasoning;
     "provider",`Assoc ["require_parameters",`Bool true;"data_collection",`String "deny"]] in
   call t ~output_tokens:output ~path:"/chat/completions" body >|= function
   | Error error->Error error
@@ -89,7 +89,7 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
     else system, `Assoc ["type", `String "json_schema";"json_schema",`Assoc [
       "name",`String name;"strict",`Bool true;"schema",schema]] in
   let body = `Assoc [
-    "model", `String t.config.model; "stream", `Bool false; "temperature", `Float 0.1;
+    "model", `String t.config.model; "stream", `Bool false;
     "max_tokens", `Int max_tokens; "reasoning", reasoning;
     "provider", `Assoc ["require_parameters", `Bool true; "data_collection", `String "deny"];
     "messages", `List [
