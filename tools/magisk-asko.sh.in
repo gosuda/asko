@@ -1,0 +1,9 @@
+#!/system/bin/sh
+# Magisk late_start. Only the launcher is root; the backend uses the Termux UID.
+asko_uid=@UID@
+(
+  while [ ! -x /data/data/com.termux/files/home/asko/current/asko ]; do /system/bin/sleep 5; done
+  [ "$(/system/bin/stat -c %u /data/data/com.termux)" = "$asko_uid" ] || exit 1
+  exec /product/bin/su -d -g "$asko_uid" -G 3003 -s /system/bin/sh "$asko_uid" \
+    -c /data/data/com.termux/files/home/asko/supervise-phone.sh
+) >/dev/null 2>&1 </dev/null &

@@ -1,0 +1,22 @@
+{
+  "source_id": "iris:phone:1",
+  "port": 8080,
+  "db_path": "var/asko.sqlite",
+  "iris_url": "http://127.0.0.1:3000",
+  "bot_id": "",
+  "rooms": [],
+  "dry_run": true,
+  "retention_days": 7,
+  "openrouter_url": "https://openrouter.ai/api/v1",
+  "model": "deepseek/deepseek-v4.1-flash",
+  "reasoning_enabled": true,
+  "response_format": "json_object",
+  "embedding_model": "jina-v5-nano-retrieval-q8",
+  "api_key": "",
+  "api_key_env": "OPENROUTER_API_KEY",
+  "ingest_token_env": "ASKO_INGEST_TOKEN",
+  "reasoning_max_tokens": 2048,
+  "embedding_url": "http://127.0.0.1:8081/v1",
+  "http_timeout": 120,
+  "cooldown": 0
+}

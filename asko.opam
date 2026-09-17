@@ -1,0 +1,21 @@
+opam-version: "2.0"
+synopsis: "Explicitly invoked KakaoTalk conversation summaries via Iris"
+description: "OCaml backend for rooted Android, with local storage and OpenRouter."
+maintainer: "asko contributors"
+authors: "asko contributors"
+license: "Apache-2.0"
+homepage: "https://github.com/gosuda/asko"
+bug-reports: "https://github.com/gosuda/asko/issues"
+dev-repo: "git+https://github.com/gosuda/asko.git"
+depends: [
+  "ocaml" {>= "5.4.1" & < "5.5"}
+  "dune" {>= "3.18"}
+  "yojson" {>= "3.0"}
+  "lwt" {>= "6.1"}
+  "cohttp-lwt-unix" {>= "6.2"}
+  "tls-lwt" {>= "2.1"}
+  "sqlite3" {>= "5.2"}
+  "ptime" {>= "1.2"}
+]
+build: [["dune" "build" "-p" name "-j" jobs]]
+run-test: [["dune" "runtest" "-p" name "-j" jobs]]

@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+asko_repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
+asko_toolchain=${ASKO_TOOLCHAIN_DIR:-$asko_repo/.cache/toolchain}
+if [ -f "$asko_repo/.cache/toolchain-path" ] && [ -z "${ASKO_TOOLCHAIN_DIR:-}" ]; then
+    asko_toolchain=$(cat "$asko_repo/.cache/toolchain-path")
+fi
+export PATH="$asko_toolchain/host/bin:$asko_repo/.cache/bin:$PATH"
+export OPAMROOT="$asko_repo/.cache/opam"
+if [ -d "$asko_repo/.cache/native-sysroot" ]; then
+    export PKG_CONFIG_PATH="$asko_repo/.cache/native-sysroot/usr/lib/x86_64-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    export C_INCLUDE_PATH="$asko_repo/.cache/native-sysroot/usr/include:$asko_repo/.cache/native-sysroot/usr/include/x86_64-linux-gnu${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
+    export LIBRARY_PATH="$asko_repo/.cache/native-sysroot/usr/lib/x86_64-linux-gnu${LIBRARY_PATH:+:$LIBRARY_PATH}"
+fi
+cd "$asko_repo"
+exec opam exec --switch=asko -- "$@"
