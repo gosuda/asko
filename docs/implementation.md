@@ -26,6 +26,6 @@ The conversational path passed a mock tool-call run covering source retrieval, a
 
 ## Remaining checks
 
-Actual KakaoTalk events and delivery, paid OpenRouter calls, Korean summary quality, and phone sleep, reboot, and network transitions need a live trial. The backend boot installer is prepared but has not been installed or tested across a reboot. Setup scripts ran against an existing dependency cache; a clean-machine installation has not been repeated.
+Basic test-room ingestion and live replies have been observed. Broader conversational quality and phone sleep, reboot, and network transitions need further live use. The backend boot installer is prepared but has not been installed or tested across a reboot. Setup scripts ran against an existing dependency cache; a clean-machine installation has not been repeated.
 
-Work stays on `lidarbtc/android-backend` with local commits and no remote push. Live send tests require a chosen test room. API keys and conversations stay out of Git.
+Live send tests use a designated test room. API keys and conversations stay out of Git.
