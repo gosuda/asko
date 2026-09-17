@@ -64,6 +64,39 @@ let () =
     check "follow-up evidence cannot cross rooms" (Store.reference_messages refs {range with room_id="b"} reference=[]);
     ignore(Store.put_message refs ~is_command:false {original with deleted=true});
     check "follow-up cannot restore deleted evidence" (Store.reference_messages refs range reference=[]));
+  let selective=Store.open_ ":memory:" in
+  Fun.protect ~finally:(fun ()->Store.close selective) (fun () ->
+    let used=message 10L "actual evidence" and unrelated=message 1L "unrelated" in
+    let request={(message 20L "question") with mentions=["bot"];sender_name="Alice"} in
+    List.iter (fun m->ignore(Store.put_message selective ~is_command:false m)) [used;unrelated];
+    ignore(Store.put_message selective ~is_command:true request);
+    let config={Config.default with source_id="fixture:1";rooms=["a"];bot_id="bot";dry_run=false} in
+    ignore(Store.enqueue selective ~now:10020. ~config {message=request;trigger=Mention;prompt="question"});
+    let job=Option.get(Store.claim_job selective ~now:10020.) in
+    let version=Store.room_version selective ~source:used.source ~room:used.room_id in
+    ignore(Store.put_message selective ~is_command:false {unrelated with text="changed unrelated text"});
+    Store.put_embedding ~snapshot:[used] selective ~source:used.source ~room:used.room_id ~key:"only-used"
+      ~model:"embedding" ~content:used.text ~at:10020. ~version [|1.;0.|];
+    check "unrelated changes do not reject in-flight embeddings"
+      (Option.is_some(Store.get_embedding selective ~source:used.source ~room:used.room_id ~key:"only-used" ~model:"embedding" ~content:used.text));
+    let evidence=Some (`Assoc ["selected_ids",`List [`String "10"];"input_ids",`List [`String "10";`String "20"]]) in
+    Store.finish_job ~snapshot:[used;request] selective job ~body:"answer" ~dry_run:false ~snapshot_version:(Some version) ~evidence;
+    ignore(Store.put_message selective ~is_command:false {used with sender_name="new nickname";mentions=["someone"]});
+    ignore(Store.purge selective ~before:10005.);
+    check "nickname changes and unrelated expiry preserve pending answers"
+      ((List.hd(Store.recent_outbox selective)).body="answer");
+    let changed={used with text="edited evidence"} in
+    ignore(Store.put_message selective ~is_command:false changed);
+    check "only dependent embedding is invalidated"
+      (Store.get_embedding selective ~source:used.source ~room:used.room_id ~key:"only-used" ~model:"embedding" ~content:used.text=None);
+    check "changed evidence requeues an unsent answer" (Store.recent_outbox selective=[] && Option.is_some(Store.claim_job selective ~now:10021.));
+    check "used source edits still reject stale results"
+      (try Store.ensure_snapshot selective [used];false with Store.Stale_snapshot->true);
+    Store.exec selective "UPDATE jobs SET attempts=3,state='queued',available_at=0";
+    let exhausted=Option.get(Store.claim_job selective ~now:10022.) in
+    Lwt_main.run(Engine.process_job (Engine.create config selective) exhausted);
+    check "exhausted source retries produce a user-visible notice"
+      (List.exists (fun (o:Store.outgoing)->o.state="pending" && o.body<>"") (Store.recent_outbox selective)));
   let path = Filename.temp_file "asko-test" ".sqlite" in
   let backup=path^".backup" in
   let cleanup () = List.iter (fun p -> try Sys.remove p with Sys_error _ -> ())

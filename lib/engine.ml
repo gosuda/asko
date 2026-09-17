@@ -13,14 +13,14 @@ let log event code =
 let recover t ?through room = Lwt_mutex.with_lock t.recovery_lock (fun () ->
   Recovery.room ~config:t.config ~store:t.store ~iris:t.iris ?through room)
 
-let finish t job ?snapshot_version ?evidence body =
+let finish t job ?snapshot ?snapshot_version ?evidence body =
   let sender=job.Store.invocation.message in
   (if sender.sender_name=sender.sender_id then
      Iris.sender_name t.iris sender.sender_id >|= Option.value ~default:sender.sender_name
    else Lwt.return sender.sender_name) >>= fun name ->
   let prefix="@" ^ Trigger.normalize name ^ "\n" in
   let body=prefix ^ Utf8.take (max 0 (t.config.max_response_bytes-String.length prefix)) body in
-  Store.finish_job t.store job ~body ~dry_run:t.config.dry_run ~snapshot_version ~evidence;
+  Store.finish_job ?snapshot t.store job ~body ~dry_run:t.config.dry_run ~snapshot_version ~evidence;
   Lwt.return_unit
 
 let friendly_error = function
@@ -35,6 +35,13 @@ let failed t (job:Store.job) error =
   if Llm.retryable error && job.attempts<3 && now+.5.<job.expires_at then
     (Store.fail_job t.store job ~now ~retry:true ~reason:(Llm.error_name error); Lwt.return_unit)
   else finish t job (friendly_error error)
+
+let source_changed_notice t (job:Store.job) =
+  log "job_failed" "used_source_changed";
+  (* Allow the failure notice to be delivered even when the model's deadline ended. *)
+  Store.run t.store "UPDATE jobs SET expires_at=MAX(expires_at,?) WHERE id=?"
+    [Store.real(Unix.gettimeofday ()+.60.);Store.integer job.id];
+  finish t job "참고한 메시지가 계속 수정되어 답변을 마무리하지 못했어요. 잠시 후 다시 불러주세요."
 
 let resolve_anchor t request since =
   match request.reply_to, Store.anchor t.store request with
@@ -79,6 +86,8 @@ let process_job t (job:Store.job) =
   if request.source<>t.config.source_id || not (Config.allowed t.config request.room_id) || request.deleted || request.is_bot
      || job.invocation.trigger<>Mention || Trigger.detect ~bot_id:t.config.bot_id request=None then
     (Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:false ~reason:"scope_changed"; Lwt.return_unit)
+  else if job.attempts>3 then
+    source_changed_notice t job
   else Lwt.catch (fun () ->
     Lwt_unix.with_timeout (max 0.1 (job.expires_at-.Unix.gettimeofday ())) (fun () ->
       recover t ~through:request.seq request.room_id >>= fun recovery ->
@@ -90,20 +99,32 @@ let process_job t (job:Store.job) =
         before_seq=request.seq;through_time=request.created_at;retention_start=since;note=None} in
       let history=Store.messages ~max_bytes:t.config.max_history_bytes t.store range in
       let version=Store.room_version t.store ~source:request.source ~room:request.room_id in
+      let inherited=Store.reference_messages t.store range reference in
       Conversation.run ~config:t.config ~store:t.store ~llm:t.llm ~name_messages:(speaker_names t)
         ~request:job.invocation ~anchor ~reference ~history ~range ~version >>= function
       | Error error -> failed t job error
       | Ok (answer,evidence_messages) ->
           let body=Summary.render_answer ~max_bytes:t.config.max_response_bytes ~messages:evidence_messages answer in
           let body=if Result.is_ok recovery then body else body ^ "\n(일부 대화 수집이 지연되어 저장된 내용으로 답했어요.)" in
-          let evidence=`Assoc ["selected_ids",`List (List.map (fun (m:message)->`String(Int64.to_string m.seq)) evidence_messages)] in
-          finish t job ~snapshot_version:version ~evidence body))
+          let anchor_snapshot=match anchor with
+            | Some m when m.is_bot -> [{m with text=""}]
+            | Some m -> [m] | None -> [] in
+          let snapshot=List.sort_uniq (fun (a:message) b->Int64.compare a.seq b.seq)
+              (request :: anchor_snapshot @ inherited @ evidence_messages) in
+          let evidence=`Assoc ["selected_ids",`List (List.map (fun (m:message)->`String(Int64.to_string m.seq)) evidence_messages);
+            "input_ids",`List(List.map (fun (m:message)->`String(Int64.to_string m.seq)) snapshot)] in
+          finish t job ~snapshot ~snapshot_version:version ~evidence body))
     (function
       | Lwt.Canceled -> Lwt.fail Lwt.Canceled
       | Store.History_too_large -> failed t job Llm.Input_too_large
       | Store.Stale_snapshot ->
-          Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:true ~reason:"source_changed";
-          Lwt.return_unit
+          let now=Unix.gettimeofday () in
+          log "job_retry" "used_source_changed";
+          if job.attempts<3 && now+.5.<job.expires_at then begin
+            Store.fail_job t.store job ~now ~retry:true ~reason:"source_changed";
+            Lwt.return_unit
+          end else
+            source_changed_notice t job
       | Lwt_unix.Timeout -> failed t job (Llm.Network Net.Timeout)
       | _ -> Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:true ~reason:"internal_error";
           log "job_failed" "internal_error"; Lwt.return_unit)
