@@ -20,6 +20,8 @@ Deployment, repeated deployment, configuration preservation, duplicate process p
 
 Qwen's JSON mode, configuration-file keys, environment-key precedence, and strict-schema compatibility passed mock tests on PC and phone. The later Jina change received a build check and one real on-phone embedding request, which returned 768 dimensions. The full regression suite was not rerun for the Jina or alias-removal changes.
 
+Iris v0.32 now starts from the original APK in a private mount namespace. The bot ID was read from Iris and saved to both phone and local configuration; the authenticated callback points to asko. SSH root capabilities were restored by removing the launcher's explicit capability drop.
+
 ## Remaining checks
 
 Actual KakaoTalk events and delivery, paid OpenRouter calls, Korean summary quality, and phone sleep, reboot, and network transitions need a live trial. The backend boot installer is prepared but has not been installed or tested across a reboot. Setup scripts ran against an existing dependency cache; a clean-machine installation has not been repeated.

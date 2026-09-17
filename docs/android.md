@@ -52,9 +52,9 @@ unset asko_key
 
 ## Connect Iris
 
-Install with `./scripts/deploy-iris-phone.sh asko-phone`. It downloads [Iris v0.32](https://github.com/dolidolih/Iris/releases/tag/v0.32), verifies the published SHA256, and prepares a separate APK for this text bot. The [upstream installation instructions](https://github.com/dolidolih/Iris#시작하기) describe the `app_process` entry point.
+Install with `./scripts/deploy-iris-phone.sh asko-phone`. It downloads [Iris v0.32](https://github.com/dolidolih/Iris/releases/tag/v0.32), verifies the published SHA256, and installs the original APK for this text bot. The [upstream installation instructions](https://github.com/dolidolih/Iris#시작하기) describe the `app_process` entry point.
 
-The packaged APK redirects Iris's image directory to `/data/local/tmp/asko-iris/scratch-images/`, so its cleanup worker cannot delete files from KakaoTalk's shared directory. The patch keeps the DEX string length unchanged and updates its checksums. `tools/prepare-iris.py` records the exact change; the upstream APK remains in the build cache.
+The launcher gives Iris a private mount namespace and maps its `/sdcard` view to `/data/local/tmp/asko-iris/private-sdcard`. Its image cleanup stays in that private directory. Other apps keep their normal storage view, and the upstream APK is unchanged.
 
 The launcher blocks non-loopback access to port 3000 with IPv4 and IPv6 firewall rules. Iris files and logs stay under the root-owned `/data/local/tmp/asko-iris`. This text-only setup does not configure image delivery or automatic startup after reboot.
 

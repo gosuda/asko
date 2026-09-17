@@ -19,9 +19,7 @@ done
 if [ ! -f config.json ]; then
     printf '%s\n' '{"botName":"Iris","botHttpPort":3000,"webServerEndpoint":"","dbPollingRate":1000,"messageSendRate":1000,"botId":0}' >config.json
 fi
-mkdir -p scratch-images
-export IRIS_CONFIG_PATH="$asko_iris/config.json"
-export CLASSPATH="$asko_iris/Iris.apk"
-/system/bin/nohup /system/bin/app_process / party.qwer.iris.Main >>iris.log 2>&1 </dev/null &
+mkdir -p private-sdcard
+/system/bin/nohup /system/bin/unshare -m /system/bin/sh "$asko_iris/iris-inner.sh" >>iris.log 2>&1 </dev/null &
 printf '%s\n' "$!" >iris.pid
 printf '%s\n' 'Iris launch requested.'
