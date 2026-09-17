@@ -71,8 +71,7 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
     else `Assoc ["enabled",`Bool false], max_tokens in
   let system, response_format =
     if t.config.response_format="json_object" then
-      (* Qwen3.7 Flash supports JSON mode, but not provider-enforced JSON Schema.
-         Keep the output contract in the trusted prompt and validate locally. *)
+      (* Keep the JSON-mode output contract in the trusted prompt and validate locally. *)
       system ^ "\n\nReturn one JSON object without markdown. Follow this JSON schema ("
         ^ name ^ ") exactly:\n" ^ Json_util.to_string schema,
       `Assoc ["type", `String "json_object"]

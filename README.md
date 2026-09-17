@@ -2,7 +2,7 @@
 
 An experimental OCaml bot that summarizes KakaoTalk OpenChat conversations through [Iris](https://github.com/dolidolih/Iris). It responds only when its account is mentioned in KakaoTalk. Requests use natural language; reply to a message while mentioning the bot to provide context.
 
-The backend, SQLite database, and Jina embedding server run on a rooted Android ARM64 phone. Qwen3.7 Flash handles intent classification and summaries through OpenRouter. Build the native binaries on Linux; the phone needs no OCaml compiler or Linux container.
+The backend, SQLite database, and Jina embedding server run on a rooted Android ARM64 phone. DeepSeek V4.1 Flash handles intent classification and summaries through OpenRouter. Build the native binaries on Linux; the phone needs no OCaml compiler or Linux container.
 
 ## Use
 
@@ -54,7 +54,7 @@ Edit `config.local.json`, or `~/asko/config.local.json` on the phone. Deployment
 
 Keep the file private with `chmod 600 config.local.json`. Git ignores it, and `check-config` prints only whether a key is present.
 
-[Qwen3.7 Flash](https://openrouter.ai/qwen/qwen3.7-flash) uses `response_format=json_object` with local response validation. `reasoning_enabled=true` adds a 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) to the response allowance. Models that support enforced schemas can use `json_schema`.
+[DeepSeek V4.1 Flash](https://openrouter.ai/deepseek/deepseek-v4.1-flash) uses `response_format=json_object` with local response validation. `reasoning_enabled=true` adds a 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) to the response allowance. Models that support enforced schemas can use `json_schema`.
 
 Jina v5 Nano retrieval Q8 runs at `http://127.0.0.1:8081/v1`. It needs no API key. Queries use `Query: ` and conversation chunks use `Document: `.
 

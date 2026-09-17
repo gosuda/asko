@@ -34,7 +34,7 @@ The first configuration has `dry_run=true` and no allowed rooms. The backend lis
 
 ## Credentials and rooms
 
-Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. Defaults are `qwen/qwen3.7-flash`, `reasoning_enabled=true`, and `response_format=json_object`.
+Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. Defaults are `deepseek/deepseek-v4.1-flash`, `reasoning_enabled=true`, and `response_format=json_object`.
 
 You can also keep the key in a separate file. From a Bash session on the phone:
 

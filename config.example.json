@@ -8,7 +8,7 @@
   "dry_run": true,
   "retention_days": 7,
   "openrouter_url": "https://openrouter.ai/api/v1",
-  "model": "qwen/qwen3.7-flash",
+  "model": "deepseek/deepseek-v4.1-flash",
   "reasoning_enabled": true,
   "response_format": "json_object",
   "embedding_model": "jina-v5-nano-retrieval-q8",
