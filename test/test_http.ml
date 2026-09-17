@@ -3,11 +3,11 @@ open Lwt.Infix
 let check name value = if not value then failwith name else Printf.printf "ok: %s\n%!" name
 let get name json = Json_util.required name json
 
-let event ?(room="a") ?(sender="alice") seq message = `Assoc [
+let event ?(room="a") ?(sender="alice") ?(mentions=[]) seq message = `Assoc [
   "msg", `String message; "room", `String "display name is not identity"; "sender", `String sender;
   "json", `Assoc ["_id", `String (string_of_int seq); "id", `String ("native-" ^ string_of_int seq);
     "chat_id", `String room; "user_id", `String sender; "created_at", `Float (Unix.gettimeofday ());
-    "attachment", `String "{}"; "v", `String "{}"]]
+    "attachment", `Assoc ["mentions", `List (List.map (fun id -> `Assoc ["user_id",`String id]) mentions)]; "v", `String "{}"]]
 
 let () =
   let path = Filename.temp_file "asko-http" ".sqlite" in
@@ -36,7 +36,7 @@ let () =
       check "UTF-8 Iris event stored" (get "inserted" (Result.get_ok inserted)=`Bool true);
       post (event 1 "한국어 대화") >>= fun duplicate ->
       check "duplicate HTTP event remains idempotent" (get "inserted" (Result.get_ok duplicate)=`Bool false);
-      post (event 2 "@요약봇 오늘 중요한거") >>= fun invocation ->
+      post (event ~mentions:["bot"] 2 "@요약봇 오늘 중요한거") >>= fun invocation ->
       check "HTTP mention produces a durable job" (get "job_state" (Result.get_ok invocation)=`String "queued");
       post (event ~sender:"bot" 3 "@요약봇 오늘") >>= fun echo ->
       check "bot output never triggers a new job" (get "job_state" (Result.get_ok echo)=`String "not_requested");

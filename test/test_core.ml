@@ -12,11 +12,11 @@ let message ?(seq=100L) ?(room_id="room-a") ?(sender_id="alice")
     room_id; sender_id; sender_name=sender_id; created_at; text;
     reply_to; mentions; is_bot; deleted=false }
 
-let detect = Trigger.detect ~bot_id:"bot" ~aliases:["요약봇"]
-let invocation text = Option.get (detect (message text))
+let detect = Trigger.detect ~bot_id:"bot"
+let invocation text = Option.get (detect (message ~mentions:["bot"] text))
 let () =
   check "plain conversation ignored" (detect (message "오늘 postgres 얘기함") = None);
-  check "alias boundary" (detect (message "@요약봇아님 오늘") = None);
+  check "typed bot name is not a native mention" (detect (message "@요약봇 오늘") = None);
   check "quoted mention ignored" (detect (message "> @요약봇 오늘") = None);
   check "bot echo ignored" (detect (message ~sender_id:"bot" "/요약") = None);
   check "ordinary reply ignored" (detect (message ~reply_to:"native-80" "그러네") = None);
@@ -25,7 +25,7 @@ let () =
   check "native mention accepted" (Option.is_some (detect (message ~mentions:["bot"] "오늘 뭐있었어")));
   check "reply accepted" ((Option.get (detect (message ~reply_to:"native-80" "여기부터 요약"))).trigger = Reply);
   check "mention and reply produce one call"
-    ((Option.get (detect (message ~reply_to:"native-80" "@요약봇 오늘"))).trigger = Mention);
+    ((Option.get (detect (message ~mentions:["bot"] ~reply_to:"native-80" "@요약봇 오늘"))).trigger = Mention);
   check "fixed duration with topic"
     (Intent.shortcut (invocation "/요약 2시간 postgres 결론") =
      Summarize {scope=Last_minutes 120; topic=Some "postgres"; focus=Conclusions});

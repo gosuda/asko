@@ -12,7 +12,7 @@ let apply ~config ~store ~now ~live (message : message) =
       match Store.get_message store ~source:message.source ~seq:message.seq with
       | Some prior when message.sender_name=message.sender_id -> {message with sender_name=prior.sender_name}
       | _ -> message in
-    let invocation = Trigger.detect ~bot_id:config.bot_id ~aliases:config.aliases message in
+    let invocation = Trigger.detect ~bot_id:config.bot_id message in
     Store.transaction store (fun () ->
       let stored_message = if message.is_bot then {message with text=""} else message in
       let inserted = Store.put_message store ~is_command:(invocation <> None) stored_message in

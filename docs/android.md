@@ -62,7 +62,7 @@ cd ~/asko
 ./run-phone.sh check-config
 ```
 
-`config.local.json`에 확인된 `bot_id`와 테스트 방 ID를 문자열로 넣는다. `rooms`에 없는 방은 저장·검색·응답 대상이 아니다. 실제 payload에서 `_id`와 네이티브 `id`, 멘션·답장 필드를 확인한다.
+`iris-info`가 조회한 `bot_id`와 테스트 방 ID를 `config.local.json`에 문자열로 한 번 넣는다. 현재 자동 저장은 하지 않는다. 실제 멘션의 계정 ID로 호출을 판별하며 텍스트 alias 설정은 사용하지 않는다. `rooms`에 없는 방은 저장·검색·응답 대상이 아니다. 실제 payload에서 `_id`와 네이티브 `id`, 멘션·답장 필드를 확인한다.
 
 ```sh
 ./run-phone.sh configure-iris

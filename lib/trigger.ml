@@ -18,7 +18,7 @@ let reply_request text =
   List.mem text ["여기부터 요약"; "여기부터 요약해줘"; "여기부터 요약해주세요";
                   "여기부터 정리해줘"; "이후 대화 요약"; "이후 대화 요약해줘"]
 
-let detect ~bot_id ~aliases message =
+let detect ~bot_id message =
   let text = String.trim message.text in
   if message.is_bot || message.deleted || message.sender_id = bot_id
      || String.starts_with ~prefix:">" text || String.starts_with ~prefix:"```" text
@@ -27,10 +27,6 @@ let detect ~bot_id ~aliases message =
     let make trigger prompt = Some { message; trigger; prompt } in
     match strip_token "/요약" text with
     | Some prompt -> make Slash prompt
-    | None ->
-        let alias = List.find_map (fun alias -> strip_token ("@" ^ alias) text) aliases in
-        (match alias with
-         | Some prompt -> make Mention prompt
-         | None when bot_id <> "" && List.mem bot_id message.mentions -> make Mention text
-         | None when message.reply_to <> None && reply_request text -> make Reply text
-         | None -> None)
+    | None when bot_id <> "" && List.mem bot_id message.mentions -> make Mention text
+    | None when message.reply_to <> None && reply_request text -> make Reply text
+    | None -> None

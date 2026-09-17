@@ -4,9 +4,6 @@
   "db_path": "var/asko.sqlite",
   "iris_url": "http://127.0.0.1:3000",
   "bot_id": "",
-  "aliases": [
-    "요약봇"
-  ],
   "rooms": [],
   "dry_run": true,
   "retention_days": 7,

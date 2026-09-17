@@ -4,7 +4,6 @@ type t = {
   db_path : string;
   iris_url : string;
   bot_id : string;
-  aliases : string list;
   rooms : string list;
   dry_run : bool;
   retention_days : int;
@@ -35,7 +34,7 @@ type t = {
 
 let default = {
   source_id="iris:phone:1"; port=8080; db_path="var/asko.sqlite";
-  iris_url="http://127.0.0.1:3000"; bot_id=""; aliases=["요약봇"]; rooms=[];
+  iris_url="http://127.0.0.1:3000"; bot_id=""; rooms=[];
   dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=300.;
   cooldown=20.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
   max_input_bytes=240000; max_history_bytes=2000000; max_response_bytes=7000; max_output_tokens=1800; daily_budget_tokens=500000;
@@ -57,7 +56,7 @@ let of_json json = Json_util.protect (fun () ->
   let c = {
     source_id=s "source_id" d.source_id; port=i "port" d.port;
     db_path=s "db_path" d.db_path; iris_url=s "iris_url" d.iris_url;
-    bot_id=s "bot_id" d.bot_id; aliases=strings "aliases" d.aliases;
+    bot_id=s "bot_id" d.bot_id;
     rooms=strings "rooms" d.rooms; dry_run=b "dry_run" d.dry_run;
     retention_days=i "retention_days" d.retention_days;
     recovery_interval=f "recovery_interval" d.recovery_interval;

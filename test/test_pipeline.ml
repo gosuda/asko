@@ -20,10 +20,10 @@ let raw_query db sql bindings =
       | code -> failwith (Sqlite3.Rc.to_string code) in loop [])
 
 let native_id seq = Int64.to_string (Int64.add 9007199254740993L (Int64.of_int seq))
-let insert db ~seq ~room ~sender ~at ~text ?reply () =
+let insert db ~seq ~room ~sender ~at ~text ?reply ?(mentions=[]) () =
   let stmt=Sqlite3.prepare db "INSERT INTO chat_logs VALUES(?,?,?,?,?,?,?,?)" in
   Fun.protect ~finally:(fun ()->ignore (Sqlite3.finalize stmt)) (fun () ->
-    let attachment=match reply with None->"{}" | Some id->Json_util.to_string (`Assoc ["src_logId",`String id]) in
+    let attachment=Json_util.to_string (`Assoc ((match reply with None->[] | Some id->["src_logId",`String id]) @ ["mentions",`List (List.map (fun id->`Assoc ["user_id",`String id]) mentions)])) in
     let mine=if sender="9999" then {|{"isMine":true}|} else {|{"isMine":false}|} in
     ignore (Sqlite3.bind_values stmt [Sqlite3.Data.INT (Int64.of_int seq);Sqlite3.Data.TEXT (native_id seq);
       Sqlite3.Data.TEXT room;Sqlite3.Data.TEXT sender;Sqlite3.Data.INT (Int64.of_float at);
@@ -195,7 +195,7 @@ let () =
       let rec wait_sent target attempts =
         if List.length (List.filter (fun (o:Store.outgoing)->o.state="sent") (Store.recent_outbox store))>=target then Lwt.return_unit
         else if attempts=0 then Lwt.fail_with "pipeline did not finish" else Lwt_unix.sleep 0.05 >>= fun ()->wait_sent target (attempts-1) in
-      insert fixture ~seq:210 ~room:"1001" ~sender:"2001" ~at:now ~text:"@요약봇 아까 postgres 얘기 결론 뭐임" ();
+      insert fixture ~seq:210 ~room:"1001" ~sender:"2001" ~at:now ~text:"@요약봇 아까 postgres 얘기 결론 뭐임" ~mentions:["9999"] ();
       post 210 >>= fun accepted -> check "natural invocation accepted" (Result.is_ok accepted);
       wait_sent 1 200 >>= fun () ->
       check "semantic search reaches a later reply correction" (List.mem "1" (List.hd !contexts) && List.mem "200" (List.hd !contexts));
