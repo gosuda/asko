@@ -2,11 +2,11 @@
 
 ## Runtime
 
-Iris, the OCaml backend, SQLite, and Jina run on the phone. OpenRouter handles classification and summaries. Cohttp/Lwt provides HTTP and asynchronous workers. OCaml resolves room, time, and message boundaries; the model returns intent and cited summaries.
+Iris, the OCaml backend, SQLite, and Jina run on the phone. OpenRouter handles a conversational tool loop. Cohttp/Lwt provides HTTP and asynchronous workers. The model chooses how to respond and can read or search messages. OCaml enforces room, retention, and invocation boundaries on every lookup.
 
 Ingestion commits the message and its queued job in one transaction. Backfill resumes from a saved cursor and never executes historical commands. A serialized outbox checks delivery echoes. Interrupted sends remain uncertain until confirmed, preventing blind duplicate sends. Complete source scans reconcile edits and deletions; late events cannot restore deleted text.
 
-Period summaries process the whole selected range in chunks and refuse requests beyond the configured budget. Topic retrieval combines embeddings, keywords, neighboring messages, and reply links. Valid citation IDs establish source membership, not whether every generated claim follows from the evidence.
+Each turn starts with recent messages, reply context, and the previous response. `read_messages`, `search_messages`, and `get_message` expose original records; `respond` returns free-form text with optional source IDs. There is no intent classifier or summary-only rejection. Dates use RFC3339 tool arguments. The loop allows eight model turns within the existing token and time budgets. Valid citation IDs establish source membership, not whether every generated claim follows from the evidence.
 
 `daily_budget_tokens` reserves request UTF-8 bytes plus the output allowance before each OpenRouter call. Failed calls count too. This conservative limit is not a billing total. Retention, request expiry, cooldowns, and retry limits bound stored data and work.
 
@@ -21,6 +21,8 @@ Deployment, repeated deployment, configuration preservation, duplicate process p
 Qwen's JSON mode, configuration-file keys, environment-key precedence, and strict-schema compatibility passed mock tests on PC and phone. The later Jina change received a build check and one real on-phone embedding request, which returned 768 dimensions. The full regression suite was not rerun for the Jina or alias-removal changes.
 
 Iris v0.32 now starts from the original APK in a private mount namespace. The bot ID was read from Iris and saved to both phone and local configuration; the authenticated callback points to asko. SSH root capabilities were restored by removing the launcher's explicit capability drop.
+
+The conversational path passed a mock tool-call run covering source retrieval, a follow-up to a bot reply, room isolation, and original evidence restoration.
 
 ## Remaining checks
 

@@ -48,6 +48,16 @@ let () =
       end) in
   check_followup Config.default.cooldown;
   check_followup 20.;
+  let refs=Store.open_ ":memory:" in
+  Fun.protect ~finally:(fun ()->Store.close refs) (fun () ->
+    let original=message 1L "트리플에스 이야기" in
+    ignore(Store.put_message refs ~is_command:false original);
+    let range={source="fixture:1";room_id="a";lower=At_time 0.;before_seq=10L;through_time=10010.;retention_start=0.;note=None} in
+    let reference=Some("earlier summary",Some {|{"selected_ids":["1"]}|}) in
+    check "follow-up restores original evidence" (List.length(Store.reference_messages refs range reference)=1);
+    check "follow-up evidence cannot cross rooms" (Store.reference_messages refs {range with room_id="b"} reference=[]);
+    ignore(Store.put_message refs ~is_command:false {original with deleted=true});
+    check "follow-up cannot restore deleted evidence" (Store.reference_messages refs range reference=[]));
   let path = Filename.temp_file "asko-test" ".sqlite" in
   let backup=path^".backup" in
   let cleanup () = List.iter (fun p -> try Sys.remove p with Sys_error _ -> ())

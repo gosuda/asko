@@ -18,10 +18,10 @@ let finish t job ?snapshot_version ?evidence body =
   Lwt.return_unit
 
 let friendly_error = function
-  | Llm.Not_configured -> "아직 요약 기능을 사용할 준비가 안 됐어요. 잠시 후 다시 불러주세요."
-  | Llm.Budget_exceeded -> "오늘 사용할 수 있는 요약량을 모두 썼어요. 나중에 다시 불러주세요."
+  | Llm.Not_configured -> "아직 답변할 준비가 안 됐어요. 잠시 후 다시 불러주세요."
+  | Llm.Budget_exceeded -> "오늘 설정된 모델 사용량 한도에 도달했어요. 나중에 다시 불러주세요."
   | Llm.Input_too_large -> "대화가 너무 많아요. 봇을 멘션하고 최근 2시간처럼 범위를 줄여서 불러주세요."
-  | _ -> "요약을 완료하지 못했어요. 잠시 후 다시 불러주세요."
+  | _ -> "답변을 완료하지 못했어요. 잠시 후 다시 불러주세요."
 
 let failed t (job:Store.job) error =
   log "job_failed" (Llm.error_name error);
@@ -42,42 +42,31 @@ let resolve_anchor t request since =
             | _ -> ()) rows)
   | _ -> Lwt.return_unit
 
-let summarize t (job:Store.job) intent =
-  let request=job.invocation.message in
-  recover t ~through:request.seq request.room_id >>= fun recovery ->
-  if recovery=Error Net.Source_changed then
-    (log "source_changed" "change_source_generation";
-     finish t job "대화 연결 상태를 다시 확인해야 해요. 잠시 후 다시 불러주세요.") else
-  let since=Unix.gettimeofday () -. float_of_int (t.config.retention_days*86400) in
+let reply_context t request since =
   resolve_anchor t request since >>= fun () ->
-  let previous=Store.previous t.store request and anchor=Store.anchor t.store request in
-  match Scope.resolve ~retention_start:since ~previous ~anchor job.invocation intent with
-  | Error message -> finish t job message
-  | Ok range ->
-      let version=Store.room_version t.store ~source:request.source ~room:request.room_id in
-      let messages=Store.messages ~max_bytes:t.config.max_history_bytes t.store range in
-      let synced=Result.is_ok recovery && Store.cursor t.store ~source:request.source ~room:request.room_id >= request.seq in
-      let notes=(match range.note with None->[] | Some note->[note]) @
-        (if synced then [] else ["수집 상태를 확인하지 못해 보관된 대화만 정리했어요."]) in
-      (match intent.topic with
-       | None -> Lwt.return (Ok {Retrieval.messages;note=None})
-       | Some topic -> Retrieval.select ~config:t.config ~store:t.store ~llm:t.llm ~range ~version ~topic ~focus:intent.focus messages)
-      >>= function
-      | Error error -> failed t job error
-      | Ok selected when selected.Retrieval.messages=[] ->
-          finish t job (if intent.topic=None then "그 범위에는 요약할 대화가 없어요." else "그 범위에서 관련 대화를 찾지 못했어요.")
-      | Ok selected ->
-          Summary.generate t.llm ~intent selected.messages >>= function
-          | Error error -> failed t job error
-          | Ok summary ->
-              let notes=notes @ (match selected.note with None->[] | Some note->[note]) in
-              let body=Summary.render ~max_bytes:t.config.max_response_bytes ~range ~intent
-                  ~messages:selected.messages ~notes summary in
-              let evidence=`Assoc ["summary",Llm.summary_json summary;
-                "before_seq",`String (Int64.to_string range.before_seq);
-                "through_time",`Float range.through_time;
-                "selected_ids",`List (List.map (fun (m:message)->`String (Int64.to_string m.seq)) selected.messages)] in
-              finish t job ~snapshot_version:version ~evidence body
+  match Store.anchor t.store request with
+  | Some m when m.created_at>=since && m.is_bot && m.text="" ->
+      Iris.find_anchor t.iris ~room:request.room_id ~native_id:(Option.get request.reply_to) ~since
+      >|= (function
+        | Error _ -> Some m
+        | Ok rows -> rows |> List.filter_map (fun row ->
+            match Iris_event.of_query_row ~source:t.config.source_id ~bot_id:t.config.bot_id row with
+            | Ok found when found.native_id=request.reply_to && is_before found request
+                && not found.deleted -> Some found | _ -> None) |> function
+            | [found] -> Some found | _ -> Some m)
+  | Some m when m.created_at>=since -> Lwt.return (Some m)
+  | _ -> Lwt.return_none
+
+let speaker_names t messages =
+  let names=Hashtbl.create 8 in
+  Lwt_list.map_s (fun (m:message) ->
+    if m.sender_name<>m.sender_id then Lwt.return m else
+    (match Hashtbl.find_opt names m.sender_id with
+     | Some name -> Lwt.return name
+     | None -> Iris.sender_name t.iris m.sender_id >|= fun name ->
+         let name=Option.value ~default:m.sender_id name in
+         Hashtbl.add names m.sender_id name; name)
+    >|= fun sender_name -> {m with sender_name}) messages
 
 let process_job t (job:Store.job) =
   let request=job.invocation.message in
@@ -86,16 +75,23 @@ let process_job t (job:Store.job) =
     (Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:false ~reason:"scope_changed"; Lwt.return_unit)
   else Lwt.catch (fun () ->
     Lwt_unix.with_timeout (max 0.1 (job.expires_at-.Unix.gettimeofday ())) (fun () ->
+      recover t ~through:request.seq request.room_id >>= fun recovery ->
+      if recovery=Error Net.Source_changed then failed t job (Llm.Network Net.Source_changed) else
       let since=Unix.gettimeofday () -. float_of_int (t.config.retention_days*86400) in
-      resolve_anchor t request since >>= fun () ->
-      let anchor=match Store.anchor t.store request with
-        | Some m when m.created_at>=since -> Some m | _ -> None in
-      Llm.classify t.llm ?anchor job.invocation >>= function
-          | Error error -> failed t job error
-          | Ok Llm.Show_help -> finish t job Summary.help
-          | Ok Llm.Out_of_scope -> finish t job "이 방의 대화 요약을 도와드려요. 봇을 멘션하고 궁금한 대화나 기간을 알려주세요."
-          | Ok (Llm.Need_details question) -> finish t job (question ^ "\n시간이나 주제를 넣어 다시 불러주세요.")
-          | Ok (Llm.Ready intent) -> summarize t job intent))
+      reply_context t request since >>= fun anchor ->
+      let reference=Store.answer_reference t.store request anchor in
+      let range={source=request.source;room_id=request.room_id;lower=At_time since;
+        before_seq=request.seq;through_time=request.created_at;retention_start=since;note=None} in
+      let history=Store.messages ~max_bytes:t.config.max_history_bytes t.store range in
+      let version=Store.room_version t.store ~source:request.source ~room:request.room_id in
+      Conversation.run ~config:t.config ~store:t.store ~llm:t.llm ~name_messages:(speaker_names t)
+        ~request:job.invocation ~anchor ~reference ~history ~range ~version >>= function
+      | Error error -> failed t job error
+      | Ok (answer,evidence_messages) ->
+          let body=Summary.render_answer ~max_bytes:t.config.max_response_bytes ~messages:evidence_messages answer in
+          let body=if Result.is_ok recovery then body else body ^ "\n(일부 대화 수집이 지연되어 저장된 내용으로 답했어요.)" in
+          let evidence=`Assoc ["selected_ids",`List (List.map (fun (m:message)->`String(Int64.to_string m.seq)) evidence_messages)] in
+          finish t job ~snapshot_version:version ~evidence body))
     (function
       | Lwt.Canceled -> Lwt.fail Lwt.Canceled
       | Store.History_too_large -> failed t job Llm.Input_too_large

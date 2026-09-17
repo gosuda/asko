@@ -77,7 +77,8 @@ let () =
       | "/query" ->
           let sql=field "query" json |> Json_util.string in
           let bindings=field "bind" json |> Json_util.list Fun.id in
-          if !fail_second_page && List.length bindings=5 && List.nth bindings 1=`String "200" then
+          if Retrieval.contains sql "FROM db2." then response (`Assoc ["data",`List [`Assoc ["name",`String "앨리스";"enc",`Int 0]]])
+          else if !fail_second_page && List.length bindings=5 && List.nth bindings 1=`String "200" then
             Cohttp_lwt_unix.Server.respond_string ~status:`Service_unavailable ~body:"{}" ()
           else response (`Assoc ["data",`List (raw_query fixture sql bindings)])
       | "/reply" ->
@@ -107,6 +108,33 @@ let () =
           check "configured model selected" (field "model" json=`String config.model);
           check "reasoning explicitly disabled in chat requests"
             (field "reasoning" json=`Assoc ["enabled",`Bool false]);
+          if Json_util.field "tools" json<>None then begin
+            let turns=field "messages" json |> Json_util.list Fun.id in
+            check "tool context stays in the current room"
+              (not(Retrieval.contains (Json_util.to_string (`List turns)) "PRIVATE_ROOM_SHOULD_NEVER_LEAK"));
+            let initial=List.nth turns 1 |> field "content" |> Json_util.string |> Yojson.Safe.from_string in
+            let last=List.hd(List.rev turns) in
+            let name,args=if field "role" last=`String "tool" then
+              let result=field "content" last |> Json_util.string |> Yojson.Safe.from_string in
+              let messages=field "messages" result |> Json_util.list Fun.id in
+              let ids=List.map (fun m->field "id" m |> Json_util.string) messages in
+              contexts:=ids::!contexts;
+              "respond",`Assoc ["answer",`String "앨리스님이 DB 이야기를 했어요.";
+                "sources",`List [`String (if List.mem "200" ids then "200" else List.hd ids)]]
+            else begin
+              if field "reply" initial<>`Null then begin
+                check "bot reply restores actual answer text"
+                  (field "reply" initial |> field "is_bot" = `Bool true);
+                check "earlier response remains contextual input" (field "previous_answer" initial<>`Null)
+              end;
+              "search_messages",`Assoc ["query",`String "postgres";"start",`Null;"end",`Null]
+            end in
+            response (`Assoc ["choices",`List [`Assoc ["finish_reason",`String "tool_calls";
+              "message",`Assoc ["role",`String "assistant";"content",`Null;
+                "tool_calls",`List [`Assoc ["id",`String "call_fixture";"type",`String "function";
+                  "function",`Assoc ["name",`String name;"arguments",`String(Json_util.to_string args)]]]]]];
+              "usage",`Assoc ["total_tokens",`Int 20]])
+          end else begin
           let payload=field "messages" json |> Json_util.list Fun.id |> List.rev |> List.hd
             |> field "content" |> Json_util.string |> Yojson.Safe.from_string in
           let format=field "response_format" json in
@@ -137,6 +165,7 @@ let () =
                 "conclusion",`String (if field "focus" payload=`String "conclusions" then "agreed" else "not_requested")] in
           response (`Assoc ["choices",`List [`Assoc ["finish_reason",`String "stop";
             "message",`Assoc ["content",`String (Json_util.to_string answer)]]];"usage",`Assoc ["total_tokens",`Int 20]])
+          end
       | _ -> Cohttp_lwt_unix.Server.respond_string ~status:`Not_found ~body:"{}" () in
     let mock=Cohttp_lwt_unix.Server.create ~stop:mock_stop ~mode:(`TCP (`Socket socket))
         (Cohttp_lwt_unix.Server.make ~callback ()) in
@@ -211,9 +240,9 @@ let () =
       check "bot echo is not retained as summary input" ((Option.get (Store.get_message store ~source:config.source_id ~seq:211L)).Types.text="");
       post 210 >>= fun _ -> Lwt_unix.sleep 0.1 >>= fun () ->
       check "duplicate callback after recovery does not create another reply" (List.length !deliveries=1);
-      insert fixture ~seq:220 ~room:"1001" ~sender:"2001" ~at:now ~text:"이 얘기 어떻게 됐어?" ~reply:(native_id 200) ~mentions:["9999"] ();
+      insert fixture ~seq:220 ~room:"1001" ~sender:"2001" ~at:now ~text:"이 얘기 어떻게 됐어?" ~reply:(native_id 211) ~mentions:["9999"] ();
       post 220 >>= fun _ -> wait_sent 2 200 >>= fun () ->
-      check "reply summary includes its anchor and excludes older messages" (List.hd (List.hd !contexts)="200");
+      check "follow-up to the bot searches original conversation" (List.mem "1" (List.hd !contexts));
       insert fixture ~seq:230 ~room:"1001" ~sender:"2001" ~at:now ~text:"최근 2시간 대화 정리해줘" ~mentions:["9999"] ();
       post 230 >>= fun _ -> wait_sent 3 200 >>= fun () ->
       check "natural duration request shares the same pipeline" (List.length !deliveries=3);

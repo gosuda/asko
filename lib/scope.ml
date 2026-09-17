@@ -21,6 +21,7 @@ let resolve ~retention_start ~previous ~anchor invocation intent =
       match intent.scope with
       | Today -> at_time (midnight request.created_at)
       | Recent -> at_time (request.created_at -. 86400.)
+      | Retained -> make ~note:"보관 중인 대화를 기준으로 확인했어요." (At_time retention_start)
       | Last_minutes n -> at_time (request.created_at -. float_of_int (n * 60))
       | Since_previous ->
           (match previous with

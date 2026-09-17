@@ -275,6 +275,35 @@ let outgoing_row stmt = {
   evidence=optional_text stmt 9;
 }
 let outgoing_columns = "id,job_id,source,room_id,body,state,floor_seq,attempted_at,snapshot_version,evidence"
+
+let answer_reference t (request:message) (anchor:message option) =
+  let result s=Sqlite3.column_text s 0,optional_text s 1 in
+  match anchor with
+  | Some m when m.is_bot && m.text<>"" && is_before m request ->
+      one t {|SELECT o.body,o.evidence FROM outbox o JOIN jobs j ON j.id=o.job_id
+        WHERE o.source=? AND o.room_id=? AND o.body=? AND o.state='sent'
+        AND o.floor_seq<? AND j.request_seq<? ORDER BY o.floor_seq DESC LIMIT 1|}
+        [text request.source;text request.room_id;text m.text;integer m.seq;integer m.seq] result
+  | Some _ -> None
+  | None when request.reply_to=None ->
+      one t {|SELECT o.body,o.evidence FROM outbox o JOIN jobs j ON j.id=o.job_id
+        JOIN messages m ON m.source=j.source AND m.seq=j.request_seq
+        WHERE o.source=? AND o.room_id=? AND m.sender_id=? AND j.request_seq<?
+        AND m.created_at<=? AND o.state='sent' AND o.body<>'' ORDER BY j.request_seq DESC LIMIT 1|}
+        [text request.source;text request.room_id;text request.sender_id;integer request.seq;real request.created_at] result
+  | None -> None
+
+let reference_messages t range reference =
+  match reference with
+  | Some (_,Some evidence) ->
+      (match Json_util.protect (fun () -> Yojson.Safe.from_string evidence
+        |> Json_util.required "selected_ids" |> Json_util.list (fun value ->
+          match Int64.of_string_opt (Json_util.id value) with Some id->id | None->Json_util.invalid "invalid source ID")) with
+       | Error _ -> []
+       | Ok ids -> ids |> List.sort_uniq Int64.compare
+           |> List.filter_map (fun seq->get_message t ~source:range.source ~seq)
+           |> List.filter (in_range range))
+  | _ -> []
 let next_outgoing t ~now =
   run t {|UPDATE outbox SET state='expired' WHERE state='pending'
     AND job_id IN (SELECT id FROM jobs WHERE expires_at<=?)|} [real now];

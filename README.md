@@ -1,8 +1,8 @@
 # asko
 
-An experimental OCaml bot that summarizes KakaoTalk OpenChat conversations through [Iris](https://github.com/dolidolih/Iris). It responds only when its account is mentioned in KakaoTalk. Requests use natural language; reply to a message while mentioning the bot to provide context.
+An experimental OCaml assistant for KakaoTalk OpenChat conversations through [Iris](https://github.com/dolidolih/Iris). It responds only when its account is mentioned in KakaoTalk. Requests use natural language; reply to a message while mentioning the bot to provide context.
 
-The backend, SQLite database, and Jina embedding server run on a rooted Android ARM64 phone. DeepSeek V4.1 Flash handles intent classification and summaries through OpenRouter. Build the native binaries on Linux; the phone needs no OCaml compiler or Linux container.
+The backend, SQLite database, and Jina embedding server run on a rooted Android ARM64 phone. DeepSeek V4.1 Flash reads the context and responds through OpenRouter. It can request more conversation through local tools. Build the native binaries on Linux; the phone needs no OCaml compiler or Linux container.
 
 ## Use
 
@@ -18,9 +18,9 @@ Select the bot account in KakaoTalk's mention picker. Typing its name as plain t
 @요약봇 최근 2시간 대화 정리해줘
 ```
 
-“While I was away” starts after your previous ordinary message in that room. If none exists, the bot uses the last hour and says so. When the request refers to the replied message, the model can select a range that includes it. Every range ends at the invocation; the bot has no read-status information.
+The model receives recent conversation, the replied message, and its earlier answer. It decides whether to answer directly, read a period of history, or search for more context. Follow-ups to a bot answer can recover its original sources and speaker names. Requests are not classified into a fixed menu.
 
-Period summaries cover the selected range in chunks. Topic searches combine local embeddings with keywords and nearby replies. The backend checks source IDs and reports when it falls back to keyword search.
+Time expressions are interpreted relative to the request time in Asia/Seoul. Tools enforce the current room, retention window, and message boundary. A response can be a summary, an explanation, or an ordinary conversational reply. The backend validates cited source IDs and retains the existing resource budgets.
 
 ## Build
 
@@ -56,7 +56,7 @@ Edit `config.local.json`, or `~/asko/config.local.json` on the phone. Deployment
 
 Keep the file private with `chmod 600 config.local.json`. Git ignores it, and `check-config` prints only whether a key is present.
 
-[DeepSeek V4.1 Flash](https://openrouter.ai/deepseek/deepseek-v4.1-flash) uses `response_format=json_object` with local response validation. `reasoning_enabled=true` adds a 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) to the response allowance. Models that support enforced schemas can use `json_schema`.
+[DeepSeek V4.1 Flash](https://openrouter.ai/deepseek/deepseek-v4.1-flash) uses tool calling for history lookup and replies. `reasoning_enabled=true` adds a 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) to the response allowance.
 
 Jina v5 Nano retrieval Q8 runs at `http://127.0.0.1:8081/v1`. It needs no API key. Queries use `Query: ` and conversation chunks use `Document: `.
 

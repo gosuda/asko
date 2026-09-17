@@ -16,8 +16,8 @@ type message = {
 (* Reply and Slash remain readable for older persisted jobs only. *)
 type trigger = Mention | Reply | Slash
 type invocation = { message : message; trigger : trigger; prompt : string }
-type scope = Today | Since_previous | From_reply | Recent | Last_minutes of int
-type focus = Overview | Highlights | Conclusions
+type scope = Today | Since_previous | From_reply | Recent | Retained | Last_minutes of int
+type focus = Overview | Highlights | Conclusions | Answer
 type intent = { scope : scope; topic : string option; focus : focus }
 
 type lower_bound = At_time of float | After_message of int64 | From_message of int64
@@ -33,7 +33,7 @@ type range = {
 
 let overview scope = { scope; topic = None; focus = Overview }
 let trigger_name = function Mention -> "mention" | Reply -> "reply" | Slash -> "slash"
-let focus_name = function Overview -> "overview" | Highlights -> "highlights" | Conclusions -> "conclusions"
+let focus_name = function Overview -> "overview" | Highlights -> "highlights" | Conclusions -> "conclusions" | Answer -> "answer"
 
 let is_before (message : message) (request : message) =
   message.source = request.source && message.room_id = request.room_id

@@ -34,7 +34,7 @@ The first configuration has `dry_run=true` and no allowed rooms. The backend lis
 
 ## Credentials and rooms
 
-Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. Defaults are `deepseek/deepseek-v4.1-flash`, `reasoning_enabled=true`, and `response_format=json_object`.
+Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. The default model is `deepseek/deepseek-v4.1-flash` with `reasoning_enabled=true`. The conversation loop uses tool calling; `response_format` is used only by the older summary helpers.
 
 You can also keep the key in a separate file. From a Bash session on the phone:
 

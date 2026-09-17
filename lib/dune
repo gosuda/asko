@@ -1,4 +1,4 @@
 (library
  (name asko)
  (public_name asko)
- (libraries unix str yojson sqlite3 lwt.unix cohttp-lwt-unix tls-lwt))
+ (libraries unix str yojson sqlite3 lwt.unix cohttp-lwt-unix tls-lwt ptime))

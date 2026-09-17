@@ -8,11 +8,14 @@ let message ?(room="a") ?reply_to seq text = {
 }
 let json = Yojson.Safe.from_string
 let () =
-  let classified = Llm.decode_classification (json {|{"action":"summarize","scope":"recent","minutes":null,"topic":"postgres","focus":"conclusions","question":null}|}) in
-  check "structured intent decoded" (classified=Ok (Llm.Ready {scope=Recent;topic=Some "postgres";focus=Conclusions}));
-  check "classifier cannot select another room" (Result.is_error (Llm.decode_classification (json {|{"action":"help","room_id":"private"}|})));
-  check "classifier range is bounded" (Result.is_error (Llm.decode_classification (json {|{"action":"summarize","scope":"last_minutes","minutes":-1,"topic":null,"focus":"overview"}|})));
   let messages=[message 1L "postgres를 검토했어"; message 2L "아직 결정 안 했어"] in
+  let answer=Llm.decode_answer ~messages (json {|{"answer":"앨리스님이 postgres를 검토하자고 했어요.","sources":["1"]}|}) in
+  check "grounded conversational answer accepted" (Result.is_ok answer);
+  check "answer cannot cite an invented message"
+    (Result.is_error(Llm.decode_answer ~messages (json {|{"answer":"다른 방에서 말했어요.","sources":["999"]}|})));
+  let rendered_answer=Summary.render_answer ~max_bytes:7000 ~messages (Result.get_ok answer) in
+  check "answer is direct rather than a forced summary"
+    (String.starts_with ~prefix:"앨리스님" rendered_answer && not(Retrieval.contains rendered_answer "확인된 대화"));
   let summary=Llm.decode_summary ~messages (json {|{"bullets":[{"text":"DB 선택은 아직 미정이에요.","sources":["2"]}],"conclusion":"undecided"}|}) in
   check "valid evidence accepted" (Result.is_ok summary);
   check "fabricated source IDs rejected" (Result.is_error (Llm.decode_summary ~messages (json {|{"bullets":[{"text":"합의됨","sources":["999"]}],"conclusion":"agreed"}|})));

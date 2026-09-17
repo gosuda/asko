@@ -15,6 +15,7 @@ depends: [
   "cohttp-lwt-unix" {>= "6.2"}
   "tls-lwt" {>= "2.1"}
   "sqlite3" {>= "5.2"}
+  "ptime" {>= "1.2"}
 ]
 build: [["dune" "build" "-p" name "-j" jobs]]
 run-test: [["dune" "runtest" "-p" name "-j" jobs]]

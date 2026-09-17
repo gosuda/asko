@@ -47,6 +47,17 @@ let observed_reply t ~room ~after ~body =
 
 let configuration t = Net.json ~timeout:t.config.http_timeout `GET (Net.endpoint t.config.iris_url "/config")
 
+let sender_name t user_id =
+  let name = function
+    | Ok [row] -> (match Json_util.protect (fun () -> Json_util.required "name" row |> Json_util.string) with
+        | Ok value when String.trim value<>"" && String.is_valid_utf_8 value -> Some (Utf8.take 512 value)
+        | _ -> None)
+    | _ -> None in
+  query t "SELECT nickname AS name, enc FROM db2.open_chat_member WHERE user_id = ? LIMIT 2" [user_id]
+  >>= fun result -> match name result with
+  | Some _ as value -> Lwt.return value
+  | None -> query t "SELECT name, enc FROM db2.friends WHERE id = ? LIMIT 1" [user_id] >|= name
+
 let find_anchor t ~room ~native_id ~since =
   query t "SELECT * FROM chat_logs WHERE chat_id = ? AND id = ? AND created_at >= ? LIMIT 2"
     [room; native_id; Printf.sprintf "%.0f" since]

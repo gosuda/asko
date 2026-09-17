@@ -13,13 +13,13 @@ let batches ~bytes messages =
         else loop (m::current) (used+next) result rest in
   loop [] 0 [] fragments
 
-let generate llm ~intent messages =
+let generate llm ~intent ?request messages =
   let groups=batches ~bytes:(max 1024 (llm.Llm.config.max_input_bytes-8192)) messages in
   if groups=[] || List.length groups>8 then Lwt.return (Error Llm.Input_too_large)
   else
     let rec summarize acc = function
       | [] -> Lwt.return (Ok (List.rev acc))
-      | group::rest -> Llm.summarize llm ~intent ~messages:group () >>= function
+      | group::rest -> Llm.summarize llm ~intent ?request ~messages:group () >>= function
           | Error error -> Lwt.return (Error error)
           | Ok summary -> summarize (summary::acc) rest in
     summarize [] groups >>= function
@@ -29,7 +29,7 @@ let generate llm ~intent messages =
         let ids=List.concat_map (fun (draft:Llm.summary) ->
           List.concat_map (fun (bullet:Llm.bullet) -> bullet.sources) draft.bullets) drafts in
         let evidence=List.filter (fun (m:message) -> List.mem m.seq ids) messages in
-        Llm.summarize llm ~intent ~messages:evidence ~drafts ()
+        Llm.summarize llm ~intent ?request ~messages:evidence ~drafts ()
 
 let help = "카톡에서 봇 계정을 멘션하고 자연스럽게 물어보세요.\n예: 오늘 중요한 얘기 뭐 있었어? / DB 얘기 결론 뭐야?\n특정 메시지부터 보려면 그 메시지에 답장하면서 봇을 멘션해주세요."
 
@@ -64,3 +64,9 @@ let render ~max_bytes ~range ~intent ~messages ~notes (summary:Llm.summary) =
   let body=header ^ "\n\n" ^ bullets ^ conclusion ^ (if notes="" then "" else "\n\n" ^ notes) in
   if String.length body<=max_bytes then body
   else Utf8.take (max_bytes-64) body ^ "\n(길이 제한으로 일부를 줄였어요.)"
+
+let render_answer ~max_bytes ~messages (answer:Llm.answer) =
+  let times=messages |> List.filter (fun (m:message)->List.mem m.seq answer.answer_sources)
+    |> List.map (fun (m:message)->Scope.seoul_time m.created_at) |> List.sort_uniq String.compare in
+  let evidence=if times=[] then "" else "\n(근거: " ^ String.concat ", " times ^ ")" in
+  Utf8.take (max 1 (max_bytes-String.length evidence)) answer.answer_text ^ evidence
