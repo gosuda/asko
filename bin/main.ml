@@ -38,6 +38,21 @@ let () =
     | "serve" -> serve (configuration !config_path)
     | "status" -> let config = configuration !config_path in
         with_store config (fun store -> print_endline (Yojson.Safe.pretty_to_string (Store.stats store)))
+    | "diagnose-jobs" ->
+        let config=configuration !config_path in
+        with_store config (fun store ->
+          let now=Unix.gettimeofday () in
+          let rows=Store.rows store {|SELECT j.id,j.state,j.created_at,j.available_at,j.expires_at,
+            j.last_error,o.state,o.error FROM jobs j LEFT JOIN outbox o ON o.job_id=j.id
+            ORDER BY j.id DESC LIMIT 12|} [] (fun s ->
+            let optional i=Json_util.option (fun x->`String x) (Store.optional_text s i) in
+            `Assoc ["job_id",`String(Int64.to_string(Sqlite3.column_int64 s 0));
+              "state",`String(Sqlite3.column_text s 1);
+              "age_seconds",`Int(int_of_float(now-.Sqlite3.column_double s 2));
+              "ready_in_seconds",`Int(int_of_float(Sqlite3.column_double s 3-.now));
+              "expires_in_seconds",`Int(int_of_float(Sqlite3.column_double s 4-.now));
+              "job_error",optional 5;"delivery_state",optional 6;"delivery_error",optional 7]) in
+          print_endline(Json_util.to_string (`List rows)))
     | "outbox" -> let config = configuration !config_path in
         with_store config (fun store ->
           Store.recent_outbox store |> List.map (fun (item:Store.outgoing) -> `Assoc [
@@ -114,7 +129,7 @@ let () =
          | Ok (200, body) -> Printf.printf "{\"https\":true,\"status\":200,\"bytes\":%d}\n" (String.length body)
          | Ok (status, _) -> die ("HTTPS probe status " ^ string_of_int status)
          | Error error -> die ("HTTPS probe failed: " ^ Net.error_name error))
-    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | diagnose-recovery | backup --output path | probe-https | version [--config path]"
+    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | diagnose-recovery | diagnose-jobs | backup --output path | probe-https | version [--config path]"
   with
   | Store.Error error -> die ("database error: " ^ error)
   | Sys_error _ -> die "filesystem operation failed"
