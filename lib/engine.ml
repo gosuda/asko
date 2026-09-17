@@ -93,7 +93,7 @@ let process_job t (job:Store.job) =
       Llm.classify t.llm ?anchor job.invocation >>= function
           | Error error -> failed t job error
           | Ok Llm.Show_help -> finish t job Summary.help
-          | Ok Llm.Out_of_scope -> finish t job "이 방의 대화 요약을 도와드려요. @요약봇 오늘 중요한거처럼 불러주세요."
+          | Ok Llm.Out_of_scope -> finish t job "이 방의 대화 요약을 도와드려요. 봇을 멘션하고 궁금한 대화나 기간을 알려주세요."
           | Ok (Llm.Need_details question) -> finish t job (question ^ "\n시간이나 주제를 넣어 다시 불러주세요.")
           | Ok (Llm.Ready intent) -> summarize t job intent))
     (function
