@@ -1,43 +1,27 @@
-# 구현 순서
+# Implementation notes
 
-## 확정한 범위
+## Runtime
 
-1. PC에서 Android ARM64 네이티브 바이너리를 빌드한다. Iris·asko·SQLite는 폰에서 실행하고 LLM은 OpenRouter를 호출한다.
-2. 멘션, 답장, `/요약`을 하나의 요청 구조로 연결한다. 일반 대화는 저장만 하고 LLM을 호출하지 않는다.
-3. 오늘, 이전 일반 발언 이후, 답장 원본을 포함한 이후 대화를 지원한다. 사용자의 읽음 시각을 추정해 실제 읽음 정보처럼 표시하지 않는다.
-4. 기간 요약과 의미 검색을 통한 주제 요약을 모두 구현한다. LLM은 의도와 근거를 반환하고 방·시간·ID 범위는 OCaml이 확정한다.
-5. 수집 중복 제거, 누락 조회, 영속 작업과 순차 전송, 보관 기간, 비용·재시도 제한을 포함한다.
+Iris, the OCaml backend, SQLite, and Jina run on the phone. OpenRouter handles classification and summaries. Cohttp/Lwt provides HTTP and asynchronous workers. OCaml resolves room, time, and message boundaries; the model returns intent and cited summaries.
 
-## 로컬 커밋 단위
+Ingestion commits the message and its queued job in one transaction. Backfill resumes from a saved cursor and never executes historical commands. A serialized outbox checks delivery echoes. Interrupted sends remain uncertain until confirmed, preventing blind duplicate sends. Complete source scans reconcile edits and deletions; late events cannot restore deleted text.
 
-- [x] 호출·범위 도메인, 회귀 테스트 25개, 프로젝트 뼈대
-- [x] Iris 정규화, SQLite 저장·복구 계약, 루프백 HTTP 수신
-- [x] 실제 Android 의존성 빌드·배포
-- [x] OpenRouter 분류·요약·임베딩 검색, 영속 작업 처리
-- [x] 순차 전송과 오류 처리, 모의 서버를 이용한 통합 테스트
-- [x] 버전을 고정한 개발 환경·배포·백업 스크립트와 운영 문서
-- [x] Android 의존성 교차 빌드와 실제 폰에서 모의 Iris/LLM 검증
+Period summaries process the whole selected range in chunks and refuse requests beyond the configured budget. Topic retrieval combines embeddings, keywords, neighboring messages, and reply links. Valid citation IDs establish source membership, not whether every generated claim follows from the evidence.
 
-실제 카카오톡 송수신은 사용자가 지정한 테스트 방으로만 제한한다. OpenRouter API 키가 없으면 실제 과금 호출 대신 모의 HTTP 서버로 요청·응답 계약을 검증한다. 실제 테스트와 모의 테스트를 구분해 기록한다.
+`daily_budget_tokens` reserves request UTF-8 bytes plus the output allowance before each OpenRouter call. Failed calls count too. This conservative limit is not a billing total. Retention, request expiry, cooldowns, and retry limits bound stored data and work.
 
-## 이미 확인한 배포 기반
+## Validation record
 
-- OCaml 5.4.1 + Android NDK r29로 ARM64 ELF PIE를 만들고 실제 Galaxy SM-F711N(Android 15)에서 실행했다.
-- Unix 표준 라이브러리로 만든 서버에서 HTTP GET, 한글 JSON POST, 404를 확인했다.
-- 이 결과는 Cohttp/Lwt·TLS·SQLite 드라이버 조합의 검증을 대신하지 않는다.
-- 이 작업에서는 원격 푸시를 하지 않는다. 작업 브랜치는 `lidarbtc/android-backend`다.
+PC and Galaxy SM-F711N (Android 15) runs covered the domain, SQLite, HTTP, summaries, and mock pipeline. Checks included all invocation paths, more than 200 recovered messages, cursor recovery after a failed page, room isolation, embedding reuse, deletion reconciliation, dry-run protection, and delivery confirmation races.
 
-## 구현 검증
+The phone ran native OCaml 5.4.1 binaries built with NDK r29 for Android API 26, with `LD_PRELOAD` and `LD_LIBRARY_PATH` unset. HTTPS to OpenRouter's public model list passed with Mozilla CA verification enabled. The earlier Unix-only HTTP smoke test also covered GET, Korean JSON POST, and 404 responses.
 
-- PC에서 도메인·저장·HTTP·요약·파이프라인 테스트 5개 묶음 통과.
-- Cohttp/Lwt + OCaml TLS로 OpenRouter의 공개 모델 목록을 HTTPS GET하여 HTTP 200 확인. API 키나 대화는 보내지 않았으며 과금 API를 호출하지 않았다.
-- 실제 카카오톡 방의 Iris 이벤트와 OpenRouter 과금 호출은 아직 검증하지 않았다.
-- Galaxy SM-F711N에서 전체 도메인·SQLite·HTTP·요약·모의 파이프라인 테스트를 네이티브 바이너리로 실행해 통과했다. `LD_PRELOAD`와 `LD_LIBRARY_PATH`를 해제한 상태에서도 동작했다.
-- 같은 폰에서 Mozilla CA 번들을 사용해 OpenRouter의 공개 모델 목록을 HTTPS GET하여 HTTP 200을 확인했다. TLS 인증서 검증을 비활성화하지 않았다.
-- 자연어 모델의 실제 요약 품질은 모의 응답 테스트로 검증할 수 없다. 실제 방과 API 키를 설정한 뒤 별도 평가한다.
-- 2026-09-17: 복구 중단·재개, 임베딩 캐시 재사용, 기존 송신 대기열의 dry-run 차단, 완전한 원본 재조회 후 삭제 반영, 늦은 이벤트의 삭제 복원 방지, 기존 파일을 덮어쓰지 않는 일관된 백업을 PC와 폰에서 추가 검증했다.
-- 2026-09-17: 실제 폰에 바이너리와 CA 번들을 배포하고, 동일 릴리스 재배포·설정 보존·중복 실행 방지·자식 프로세스 종료 후 재시작·정상 종료를 확인했다. 허용 방이 없는 dry-run 설정이며 검증 후 백엔드는 정지했다. 기존 SSH 서비스는 유지한다.
-- 폰에 새로 만든 빈 asko DB로 PC 백업 복사·SHA256 일치·SQLite 무결성을 확인했다. 데이터가 있는 백업의 스냅샷 성질은 합성 대화를 사용하는 저장소 테스트에서 검증한다. 실제 카카오톡 DB는 복사하지 않았다.
-- 개발 환경 설치 스크립트는 기존 캐시에서 실행했다. 완전히 빈 PC에서의 전체 재설치는 반복하지 않았다. 백엔드 Magisk 부팅 서비스는 설치 스크립트만 준비했으며 실제 등록·폰 재부팅은 수행하지 않았다.
-- Qwen3.7 Flash로 기본 모델을 변경하고 추론을 비활성화했다. JSON 모드의 스키마 지시·응답 검증, 설정 파일 API 키와 환경변수 우선순위, 기존 JSON 스키마 모드 호환성을 PC와 폰의 모의 서버 테스트로 확인했다. 실제 유료 모델 호출은 수행하지 않았다.
-- 후속 변경: Qwen 추론을 활성화하고 임베딩을 폰 내부 Jina v5 Nano retrieval Q8로 전환했다. 이번 변경은 빌드와 실제 폰에서 합성 문장 한 건의 768차원 임베딩 생성만 확인했으며 전체 회귀 테스트는 실행하지 않았다. 폰 배포 후 프로세스는 정지 상태로 유지한다.
+Deployment, repeated deployment, configuration preservation, duplicate process prevention, child restart, and clean shutdown were checked. An empty asko database was backed up to the PC with matching hashes and SQLite integrity intact. Synthetic data tests covered snapshot consistency and refusal to overwrite files. No real KakaoTalk database was copied.
+
+Qwen's JSON mode, configuration-file keys, environment-key precedence, and strict-schema compatibility passed mock tests on PC and phone. The later Jina change received a build check and one real on-phone embedding request, which returned 768 dimensions. The full regression suite was not rerun for the Jina or alias-removal changes.
+
+## Remaining checks
+
+Actual KakaoTalk events and delivery, paid OpenRouter calls, Korean summary quality, and phone sleep, reboot, and network transitions need a live trial. The backend boot installer is prepared but has not been installed or tested across a reboot. Setup scripts ran against an existing dependency cache; a clean-machine installation has not been repeated.
+
+Work stays on `lidarbtc/android-backend` with local commits and no remote push. Live send tests require a chosen test room. API keys and conversations stay out of Git.
