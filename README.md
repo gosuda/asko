@@ -11,7 +11,9 @@ OCaml로 만드는 카카오톡 오픈채팅 대화 요약 봇. 카카오톡 연
 - LLM: OpenRouter. 기본 모델은 `qwen/qwen3.7-flash`이며 설정으로 교체한다.
 - UI: 카카오톡. 운영용 CLI와 설정 파일만 제공한다.
 
-기본값은 [Qwen3.7 Flash](https://openrouter.ai/qwen/qwen3.7-flash), 추론 비활성화(`reasoning_enabled=false`)다. 이 모델은 JSON 모드를 지원하지만 JSON 스키마 강제는 지원하지 않으므로 `response_format=json_object`로 요청하고 OCaml에서 응답 형식과 근거를 검사한다. 스키마를 지원하는 다른 모델을 쓸 때는 `json_schema`로 바꿀 수 있다. 추론 설정은 OpenRouter의 [reasoning 옵션](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)에 전달한다.
+기본값은 [Qwen3.7 Flash](https://openrouter.ai/qwen/qwen3.7-flash), 추론 활성화(`reasoning_enabled=true`)다. 이 모델은 JSON 모드를 지원하지만 JSON 스키마 강제는 지원하지 않으므로 `response_format=json_object`로 요청하고 OCaml에서 응답 형식과 근거를 검사한다. 스키마를 지원하는 다른 모델을 쓸 때는 `json_schema`로 바꿀 수 있다. 추론 설정은 OpenRouter의 [reasoning 옵션](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)에 전달한다.
+
+임베딩은 폰 내부 `http://127.0.0.1:8081/v1`의 Jina v5 Nano retrieval Q8 서버를 사용한다. OpenRouter 키는 요약·의도 분류에만 사용한다. 검색 질의에는 `Query: `, 대화에는 `Document: ` 접두사를 붙인다. 추론 예산은 기본 2,048토큰이며 응답 토큰 한도에 별도로 더한다.
 
 ## 현재 구현
 

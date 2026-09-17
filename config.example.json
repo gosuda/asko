@@ -4,16 +4,21 @@
   "db_path": "var/asko.sqlite",
   "iris_url": "http://127.0.0.1:3000",
   "bot_id": "",
-  "aliases": ["요약봇"],
+  "aliases": [
+    "요약봇"
+  ],
   "rooms": [],
   "dry_run": true,
   "retention_days": 7,
   "openrouter_url": "https://openrouter.ai/api/v1",
   "model": "qwen/qwen3.7-flash",
-  "reasoning_enabled": false,
+  "reasoning_enabled": true,
   "response_format": "json_object",
-  "embedding_model": "openai/text-embedding-3-small",
+  "embedding_model": "jina-v5-nano-retrieval-q8",
   "api_key": "",
   "api_key_env": "OPENROUTER_API_KEY",
-  "ingest_token_env": "ASKO_INGEST_TOKEN"
+  "ingest_token_env": "ASKO_INGEST_TOKEN",
+  "reasoning_max_tokens": 2048,
+  "embedding_url": "http://127.0.0.1:8081/v1",
+  "http_timeout": 120
 }

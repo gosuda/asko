@@ -23,8 +23,10 @@ type t = {
   openrouter_url : string;
   model : string;
   reasoning_enabled : bool;
+  reasoning_max_tokens : int;
   response_format : string;
   embedding_model : string;
+  embedding_url : string;
   api_key : string;
   api_key_env : string;
   ingest_token_env : string;
@@ -35,11 +37,11 @@ let default = {
   source_id="iris:phone:1"; port=8080; db_path="var/asko.sqlite";
   iris_url="http://127.0.0.1:3000"; bot_id=""; aliases=["요약봇"]; rooms=[];
   dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=300.;
-  cooldown=20.; http_timeout=45.; send_interval=1.; confirm_timeout=15.;
+  cooldown=20.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
   max_input_bytes=240000; max_history_bytes=2000000; max_response_bytes=7000; max_output_tokens=1800; daily_budget_tokens=500000;
   openrouter_url="https://openrouter.ai/api/v1";
-  model="qwen/qwen3.7-flash"; reasoning_enabled=false; response_format="json_object";
-  embedding_model="openai/text-embedding-3-small";
+  model="qwen/qwen3.7-flash"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_object";
+  embedding_model="jina-v5-nano-retrieval-q8"; embedding_url="http://127.0.0.1:8081/v1";
   api_key=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
   allow_insecure_loopback=false;
 }
@@ -72,6 +74,8 @@ let of_json json = Json_util.protect (fun () ->
     openrouter_url=s "openrouter_url" d.openrouter_url;
     model=s "model" d.model; embedding_model=s "embedding_model" d.embedding_model;
     reasoning_enabled=b "reasoning_enabled" d.reasoning_enabled;
+    reasoning_max_tokens=i "reasoning_max_tokens" d.reasoning_max_tokens;
+    embedding_url=s "embedding_url" d.embedding_url;
     response_format=s "response_format" d.response_format;
     api_key=String.trim (s "api_key" d.api_key);
     api_key_env=s "api_key_env" d.api_key_env;
@@ -80,6 +84,7 @@ let of_json json = Json_util.protect (fun () ->
   } in
   if c.port < 1024 || c.port > 65535 then invalid "port must be 1024..65535";
   if c.source_id = "" || c.db_path = "" then invalid "source_id and db_path are required";
+  if c.reasoning_max_tokens < 128 || c.reasoning_max_tokens > 8192 then invalid "reasoning_max_tokens must be 128..8192";
   if not (List.mem c.response_format ["json_object"; "json_schema"])
   then invalid "response_format must be json_object or json_schema";
   if c.retention_days < 1 || c.retention_days > 90 then invalid "retention_days must be 1..90";
@@ -102,6 +107,9 @@ let of_json json = Json_util.protect (fun () ->
   in
   valid_url ~https:false c.iris_url;
   valid_url ~https:true c.openrouter_url;
+  valid_url ~https:false c.embedding_url;
+  if not (List.mem (Uri.host (Uri.of_string c.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"])
+  then invalid "embedding_url must be local to this device";
   if not c.dry_run && (c.bot_id = "" || c.bot_id = "0") then invalid "bot_id is required before live delivery";
   c)
 

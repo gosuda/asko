@@ -40,7 +40,7 @@ make deploy SSH_TARGET=asko-phone
 
 ## OpenRouter와 테스트 방 연결
 
-폰의 `~/asko/config.local.json`에서 `api_key`에 OpenRouter 키를 넣는다. 기본 모델은 `qwen/qwen3.7-flash`, `reasoning_enabled`는 `false`, `response_format`은 `json_object`다. 설정 파일은 600 권한으로 유지하며 `check-config`는 키의 존재 여부만 출력한다. PC에서 만든 `config.local.json`은 일반 배포로 자동 전송하지 않는다.
+폰의 `~/asko/config.local.json`에서 `api_key`에 OpenRouter 키를 넣는다. 기본 모델은 `qwen/qwen3.7-flash`, `reasoning_enabled`는 `true`, `response_format`은 `json_object`다. 설정 파일은 600 권한으로 유지하며 `check-config`는 키의 존재 여부만 출력한다. PC에서 만든 `config.local.json`은 일반 배포로 자동 전송하지 않는다.
 
 키를 별도 파일에 두려면 기존 방식도 사용할 수 있다. SSH로 접속한 Bash에서 다음처럼 입력한다.
 
@@ -103,3 +103,11 @@ cd ~/asko
 - 실제 OpenRouter 분류·요약 품질과 비용은 API 키를 설정한 후 평가한다.
 - 모델의 근거 ID가 유효한지는 검사하지만, 문장 의미가 근거와 완전히 일치한다는 보장은 아니다.
 - Android 장시간 절전·재부팅·네트워크 전환 시험은 별도다.
+
+## 폰 내부 Jina 임베딩
+
+백엔드가 정지된 상태에서 `./scripts/deploy-jina-phone.sh asko-phone`으로 먼저 설치하고 일반 백엔드를 배포한다. `control-phone.sh start`가 두 프로세스를 함께 시작하고 `stop`이 함께 정지한다. 8081 포트는 루프백에만 바인딩한다.
+
+공식 `jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF`의 Q8_0(약 233MB), llama.cpp `ebbb185227c31f1652f1445e2623563d2f67fe5a`, last pooling, 768차원을 사용한다. 모델 라이선스는 CC-BY-NC-4.0이다. 가중치 SHA256과 빌드 리비전은 설치 스크립트에 고정했다. CPU 2스레드, 컨텍스트 4096으로 실행하고 대화 청크는 약 2000바이트씩 한 번에 하나 처리한다. 기존 원격 임베딩 캐시는 새 모델 식별자와 구분된다.
+
+`embedding_url`은 폰 내부 주소만 허용한다. 로컬 임베딩에는 API 키를 보내거나 OpenRouter 사용량 예산을 차감하지 않는다. Qwen은 `reasoning_enabled=true`, `reasoning_max_tokens=2048`로 실행하며 실제 API 호출에는 OpenRouter 키가 필요하다.

@@ -65,6 +65,10 @@ let call t ~output_tokens ~path body =
       end
 
 let chat t ~name ~schema ~system ~user ~max_tokens =
+  let reasoning, max_tokens = if t.config.reasoning_enabled then
+    `Assoc ["enabled",`Bool true;"max_tokens",`Int t.config.reasoning_max_tokens],
+    max_tokens+t.config.reasoning_max_tokens
+    else `Assoc ["enabled",`Bool false], max_tokens in
   let system, response_format =
     if t.config.response_format="json_object" then
       (* Qwen3.7 Flash supports JSON mode, but not provider-enforced JSON Schema.
@@ -76,7 +80,7 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
       "name",`String name;"strict",`Bool true;"schema",schema]] in
   let body = `Assoc [
     "model", `String t.config.model; "stream", `Bool false; "temperature", `Float 0.1;
-    "max_tokens", `Int max_tokens; "reasoning", `Assoc ["enabled", `Bool t.config.reasoning_enabled];
+    "max_tokens", `Int max_tokens; "reasoning", reasoning;
     "provider", `Assoc ["require_parameters", `Bool true; "data_collection", `String "deny"];
     "messages", `List [
       `Assoc ["role",`String "system";"content",`String system];
@@ -195,10 +199,15 @@ When merging drafts, preserve their original citations and do not create new fac
       | Ok summary when intent.focus<>Conclusions || summary.conclusion<>Not_requested -> Ok summary
       | _ -> Error Bad_response)
 
-let embed t inputs =
-  let body = `Assoc ["model",`String t.config.embedding_model; "input",strings inputs;
-    "encoding_format",`String "float"; "provider",`Assoc ["data_collection",`String "deny"]] in
-  call t ~output_tokens:0 ~path:"/embeddings" body >|= function
+let embed t ?(query=false) inputs =
+  let prefix=if query then "Query: " else "Document: " in
+  let body = `Assoc ["model",`String t.config.embedding_model;
+    "input",strings (List.map (fun text->prefix ^ text) inputs); "encoding_format",`String "float"] in
+  let request=if String.length (Json_util.to_string body)>t.config.max_input_bytes then
+    Lwt.return (Error Input_too_large)
+    else Net.json ~body ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.embedding_url "/embeddings")
+      >|= Result.map_error (fun error->Network error) in
+  request >|= function
   | Error error -> Error error
   | Ok json -> (match Json_util.protect (fun () ->
       let data = Json_util.required "data" json |> Json_util.list (fun item ->

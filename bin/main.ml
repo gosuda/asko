@@ -73,6 +73,7 @@ let () =
         print_endline (Yojson.Safe.pretty_to_string (`Assoc [
           "valid", `Bool true; "dry_run", `Bool c.dry_run; "allowed_rooms", `Int (List.length c.rooms);
           "model", `String c.model; "reasoning_enabled", `Bool c.reasoning_enabled;
+          "embedding_model", `String c.embedding_model; "embedding_url", `String c.embedding_url;
           "response_format", `String c.response_format; "api_key_present", `Bool (Config.api_key c <> None);
           "ingest_token_present", `Bool (Config.ingest_token c <> None)]))
     | "probe-https" ->

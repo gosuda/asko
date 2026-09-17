@@ -65,7 +65,7 @@ let () =
     let port=match Lwt_unix.getsockname socket with Unix.ADDR_INET(_,port)->port | _->assert false in
     let base=Printf.sprintf "http://127.0.0.1:%d" port in
     let config={Config.default with source_id="pipeline:1"; port=0; db_path=path;
-      iris_url=base;openrouter_url=base^"/api/v1";bot_id="9999";rooms=["1001"];
+      iris_url=base;openrouter_url=base^"/api/v1";embedding_url=base^"/api/v1";reasoning_enabled=false;bot_id="9999";rooms=["1001"];
       cooldown=0.;dry_run=false;recovery_interval=1.;send_interval=0.2;confirm_timeout=2.;
       api_key="not-a-real-key";api_key_env="ASKO_PIPELINE_KEY";ingest_token_env="ASKO_PIPELINE_TOKEN";allow_insecure_loopback=true} in
     Unix.putenv config.api_key_env ""; Unix.putenv config.ingest_token_env "test-ingress";
@@ -93,8 +93,8 @@ let () =
           response (`Assoc ["success",`Bool true])
       | "/api/v1/embeddings" ->
           incr embeddings;
-          check "embedding authentication uses configured key"
-            (Cohttp.Header.get (Cohttp.Request.headers request) "authorization"=Some "Bearer not-a-real-key");
+          check "local embeddings never receive the OpenRouter key"
+            (Cohttp.Header.get (Cohttp.Request.headers request) "authorization"=None);
           let inputs=field "input" json |> Json_util.list Json_util.string in
           let data=List.mapi (fun index input ->
             let related=Retrieval.contains (String.lowercase_ascii input) "postgres" || Retrieval.contains input "MVCC" in
@@ -143,10 +143,10 @@ let () =
       let absent=Llm.create {config with api_key="";api_key_env="ASKO_ABSENT_KEY"} store in
       Unix.putenv "ASKO_ABSENT_KEY" "";
       Llm.embed absent ["x"] >>= fun absent_result ->
-      check "missing API key fails locally" (absent_result=Error Llm.Not_configured);
+      check "local embeddings need no API key" (Result.is_ok absent_result);
       let before= !chats + !embeddings in
-      Llm.embed (Llm.create {config with daily_budget_tokens=1000} store) [String.make 2000 'x'] >>= fun budget ->
-      check "budget stops request before network" (budget=Error Llm.Budget_exceeded && before= !chats + !embeddings);
+      Llm.embed (Llm.create {config with max_input_bytes=1000} store) [String.make 2000 'x'] >>= fun budget ->
+      check "budget stops request before network" (budget=Error Llm.Input_too_large && before= !chats + !embeddings);
       let m=Iris_event.of_query_row ~source:config.source_id ~bot_id:config.bot_id
           (List.hd (raw_query fixture "SELECT * FROM chat_logs WHERE _id=200" [])) |> Result.get_ok in
       bad_citation:=true;

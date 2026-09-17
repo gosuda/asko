@@ -9,15 +9,15 @@ let chunk_content messages =
 
 let chunks messages =
   let fragments = List.concat_map (fun (m:message) ->
-    List.map (fun text -> {m with text}) (if m.text="" then [""] else Utf8.parts 3500 m.text)) messages in
+    List.map (fun text -> {m with text}) (if m.text="" then [""] else Utf8.parts 1400 m.text)) messages in
   let emit members = {members; content=chunk_content members} in
   let rec loop current result = function
     | [] -> List.rev (if current=[] then result else emit current :: result)
     | message :: rest ->
         let candidate = current @ [message] in
-        if current<>[] && (List.length candidate>32 || String.length (chunk_content candidate)>6000) then
+        if current<>[] && (List.length candidate>32 || String.length (chunk_content candidate)>2000) then
           let overlap = current |> List.rev |> take 2 |> List.rev in
-          let next = if String.length (chunk_content (overlap @ [message]))<=6000 then overlap @ [message] else [message] in
+          let next = if String.length (chunk_content (overlap @ [message]))<=2000 then overlap @ [message] else [message] in
           loop next (emit current :: result) rest
         else loop candidate result rest
   in loop [] [] fragments
@@ -76,7 +76,7 @@ let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
           note=Some "의미 검색을 사용할 수 없어 키워드로 확인한 대화만 정리했어요."}
   in
   let query=topic ^ (if focus=Conclusions then " 최종 결론 합의 정정" else "") in
-  Llm.embed llm [query] >>= function
+  Llm.embed llm ~query:true [query] >>= function
   | Error error -> Lwt.return (lexical_fallback error)
   | Ok [query_vector] ->
       let values=Array.of_list candidates in
@@ -90,7 +90,7 @@ let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
       let rec fill pending = match pending with
         | [] -> Lwt.return (Ok ())
         | _ ->
-            let batch=take 8 pending in
+            let batch=take 1 pending in
             let rest=List.filter (fun index -> not (List.mem index batch)) pending in
             Llm.embed llm (List.map (fun index -> values.(index).content) batch) >>= function
             | Error error -> Lwt.return (Error error)
