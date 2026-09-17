@@ -3,7 +3,10 @@ open Types
 let embedded name json =
   match Json_util.field name json with
   | None -> `Assoc []
-  | Some value -> (match Json_util.protect (fun () -> Json_util.json_string value) with Ok value -> value | Error _ -> `Assoc [])
+  | Some value ->
+      (match Json_util.protect (fun () -> Json_util.json_string value) with
+       | Ok (`Assoc _ as value) -> value
+       | Ok _ | Error _ -> `Assoc [])
 
 let normalize ~source ~bot_id payload = Json_util.protect (fun () ->
   let open Json_util in

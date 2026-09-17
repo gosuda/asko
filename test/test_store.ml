@@ -12,6 +12,12 @@ let () =
   let event = Iris_event.normalize ~source:"fixture:1" ~bot_id:"bot" (Yojson.Safe.from_string payload) |> Result.get_ok in
   check "large native IDs preserve integer precision" (event.native_id=Some "9007199254740993" && event.reply_to=Some "9007199254740992");
   check "mention metadata parsed" (event.mentions=["bot"]);
+  let root=Yojson.Safe.from_string payload in
+  let raw=Json_util.required "json" root |> Json_util.object_ in
+  let no_attachment=`Assoc ["json",`Assoc (("attachment",`String "null")::List.remove_assoc "attachment" raw)] in
+  let no_attachment=Iris_event.normalize ~source:"fixture:1" ~bot_id:"bot" no_attachment in
+  check "JSON null attachment is an ordinary message without metadata"
+    (match no_attachment with Ok m->m.reply_to=None && m.mentions=[] | Error _->false);
   check "malformed source ID rejected" (Result.is_error (Iris_event.normalize ~source:"x" ~bot_id:"bot" (`Assoc ["json", `Assoc []])));
   check "duplicate JSON fields rejected" (Result.is_error (Config.of_json (`Assoc ["port",`Int 8000; "port",`Int 9000])));
   check "remote plaintext LLM endpoint rejected" (Result.is_error (Config.of_json (`Assoc ["openrouter_url", `String "http://example.com/api"])));

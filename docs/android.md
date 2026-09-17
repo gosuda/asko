@@ -136,6 +136,8 @@ If KakaoTalk rebuilds its database and reuses `_id` values, change the generatio
 
 ## Optional checks
 
+`./run-phone.sh diagnose-recovery` inspects the next backfill page for each enabled room. It reports cursor positions and invalid field types without printing message text.
+
 ```sh
 make test-android SSH_TARGET=asko-phone
 ```
