@@ -20,7 +20,7 @@ let finish t job ?snapshot_version ?evidence body =
 let friendly_error = function
   | Llm.Not_configured -> "아직 요약 기능을 사용할 준비가 안 됐어요. 잠시 후 다시 불러주세요."
   | Llm.Budget_exceeded -> "오늘 사용할 수 있는 요약량을 모두 썼어요. 나중에 다시 불러주세요."
-  | Llm.Input_too_large -> "대화가 너무 많아요. /요약 2시간처럼 범위를 줄여서 불러주세요."
+  | Llm.Input_too_large -> "대화가 너무 많아요. 봇을 멘션하고 최근 2시간처럼 범위를 줄여서 불러주세요."
   | _ -> "요약을 완료하지 못했어요. 잠시 후 다시 불러주세요."
 
 let failed t (job:Store.job) error =
@@ -81,14 +81,16 @@ let summarize t (job:Store.job) intent =
 
 let process_job t (job:Store.job) =
   let request=job.invocation.message in
-  if request.source<>t.config.source_id || not (Config.allowed t.config request.room_id) || request.deleted || request.is_bot then
+  if request.source<>t.config.source_id || not (Config.allowed t.config request.room_id) || request.deleted || request.is_bot
+     || job.invocation.trigger<>Mention || Trigger.detect ~bot_id:t.config.bot_id request=None then
     (Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:false ~reason:"scope_changed"; Lwt.return_unit)
   else Lwt.catch (fun () ->
     Lwt_unix.with_timeout (max 0.1 (job.expires_at-.Unix.gettimeofday ())) (fun () ->
-      match Intent.shortcut job.invocation with
-      | Help -> finish t job Summary.help
-      | Summarize intent -> summarize t job intent
-      | Classify -> Llm.classify t.llm job.invocation >>= function
+      let since=Unix.gettimeofday () -. float_of_int (t.config.retention_days*86400) in
+      resolve_anchor t request since >>= fun () ->
+      let anchor=match Store.anchor t.store request with
+        | Some m when m.created_at>=since -> Some m | _ -> None in
+      Llm.classify t.llm ?anchor job.invocation >>= function
           | Error error -> failed t job error
           | Ok Llm.Show_help -> finish t job Summary.help
           | Ok Llm.Out_of_scope -> finish t job "이 방의 대화 요약을 도와드려요. @요약봇 오늘 중요한거처럼 불러주세요."

@@ -120,8 +120,14 @@ let () =
             | `String "json_schema" -> field "json_schema" format |> field "name" |> Json_util.string
             | _ -> failwith "unsupported response format" in
           check "other-room contents never reach model" (not (Retrieval.contains (Json_util.to_string payload) "PRIVATE_ROOM_SHOULD_NEVER_LEAK"));
-          let answer=if name="asko_intent" then Yojson.Safe.from_string
-              {|{"action":"summarize","scope":"recent","minutes":null,"topic":"postgres","focus":"conclusions","question":null}|}
+          let answer=if name="asko_intent" then
+              if field "has_reply_anchor" payload=`Bool true then begin
+                check "reply text reaches the classifier" (field "reply_context" payload<>`Null);
+                Yojson.Safe.from_string {|{"action":"summarize","scope":"from_reply","minutes":null,"topic":null,"focus":"overview","question":null}|}
+              end else if Retrieval.contains (field "request" payload |> Json_util.string) "2시간" then
+                Yojson.Safe.from_string {|{"action":"summarize","scope":"last_minutes","minutes":120,"topic":null,"focus":"overview","question":null}|}
+              else Yojson.Safe.from_string
+                {|{"action":"summarize","scope":"recent","minutes":null,"topic":"postgres","focus":"conclusions","question":null}|}
             else
               let messages=field "messages" payload |> Json_util.list Fun.id in
               let ids=List.map (fun m->field "id" m |> Json_util.string) messages in
@@ -205,12 +211,12 @@ let () =
       check "bot echo is not retained as summary input" ((Option.get (Store.get_message store ~source:config.source_id ~seq:211L)).Types.text="");
       post 210 >>= fun _ -> Lwt_unix.sleep 0.1 >>= fun () ->
       check "duplicate callback after recovery does not create another reply" (List.length !deliveries=1);
-      insert fixture ~seq:220 ~room:"1001" ~sender:"2001" ~at:now ~text:"여기부터 요약" ~reply:(native_id 200) ();
+      insert fixture ~seq:220 ~room:"1001" ~sender:"2001" ~at:now ~text:"이 얘기 어떻게 됐어?" ~reply:(native_id 200) ~mentions:["9999"] ();
       post 220 >>= fun _ -> wait_sent 2 200 >>= fun () ->
       check "reply summary includes its anchor and excludes older messages" (List.hd (List.hd !contexts)="200");
-      insert fixture ~seq:230 ~room:"1001" ~sender:"2001" ~at:now ~text:"/요약 2시간" ();
+      insert fixture ~seq:230 ~room:"1001" ~sender:"2001" ~at:now ~text:"최근 2시간 대화 정리해줘" ~mentions:["9999"] ();
       post 230 >>= fun _ -> wait_sent 3 200 >>= fun () ->
-      check "slash request shares the same complete pipeline" (List.length !deliveries=3);
+      check "natural duration request shares the same pipeline" (List.length !deliveries=3);
       check "all results observed, never blindly resent" (List.for_all (fun (o:Store.outgoing)->o.state="sent") (Store.recent_outbox store));
       ignore(Sqlite3.exec fixture "DELETE FROM chat_logs WHERE _id=201");
       fail_second_page:=true;

@@ -1,6 +1,6 @@
 # asko
 
-An experimental OCaml bot that summarizes KakaoTalk OpenChat conversations through [Iris](https://github.com/dolidolih/Iris). It responds to a native mention, a reply requesting a summary, or `/요약`.
+An experimental OCaml bot that summarizes KakaoTalk OpenChat conversations through [Iris](https://github.com/dolidolih/Iris). It responds only when its account is mentioned in KakaoTalk. Requests use natural language; reply to a message while mentioning the bot to provide context.
 
 The backend, SQLite database, and Jina embedding server run on a rooted Android ARM64 phone. Qwen3.7 Flash handles intent classification and summaries through OpenRouter. Build the native binaries on Linux; the phone needs no OCaml compiler or Linux container.
 
@@ -12,12 +12,11 @@ Select the bot account in KakaoTalk's mention picker. Typing its name as plain t
 @요약봇 잠깐 못봤는데 뭐 있었음
 @요약봇 오늘 중요한거
 @요약봇 아까 postgres 얘기 결론 뭐임
-[메시지 답장] 여기부터 요약
-/요약 오늘
-/요약 2시간
+[메시지에 답장하면서] @요약봇 이 얘기 결론 어떻게 됐어?
+@요약봇 최근 2시간 대화 정리해줘
 ```
 
-“While I was away” starts after your previous ordinary message in that room. If none exists, the bot uses the last hour and says so. Reply summaries include the referenced message. Every range ends at the invocation; the bot has no read-status information.
+“While I was away” starts after your previous ordinary message in that room. If none exists, the bot uses the last hour and says so. When the request refers to the replied message, the model can select a range that includes it. Every range ends at the invocation; the bot has no read-status information.
 
 Period summaries cover the selected range in chunks. Topic searches combine local embeddings with keywords and nearby replies. The backend checks source IDs and reports when it falls back to keyword search.
 

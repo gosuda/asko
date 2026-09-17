@@ -38,7 +38,7 @@ let resolve ~retention_start ~previous ~anchor invocation intent =
                                && message.created_at >= retention_start
                                && message.native_id = request.reply_to && request.reply_to <> None ->
                make (From_message message.seq)
-           | _ -> Error "답장 원본을 찾을 수 없어요. 다른 메시지에 답장하거나 /요약 오늘로 불러주세요.")
+           | _ -> Error "답장 원본을 찾을 수 없어요. 다른 메시지에 답장하면서 봇을 멘션하거나, 봇을 멘션하고 오늘 대화를 요청해주세요.")
 
 let seoul_time at =
   let t = Unix.gmtime (at +. seoul_offset) in

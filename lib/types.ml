@@ -13,12 +13,12 @@ type message = {
   deleted : bool;
 }
 
+(* Reply and Slash remain readable for older persisted jobs only. *)
 type trigger = Mention | Reply | Slash
 type invocation = { message : message; trigger : trigger; prompt : string }
 type scope = Today | Since_previous | From_reply | Recent | Last_minutes of int
 type focus = Overview | Highlights | Conclusions
 type intent = { scope : scope; topic : string option; focus : focus }
-type parsed = Summarize of intent | Help | Classify
 
 type lower_bound = At_time of float | After_message of int64 | From_message of int64
 type range = {

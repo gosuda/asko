@@ -31,7 +31,7 @@ let generate llm ~intent messages =
         let evidence=List.filter (fun (m:message) -> List.mem m.seq ids) messages in
         Llm.summarize llm ~intent ~messages:evidence ~drafts ()
 
-let help = "@요약봇 오늘 중요한거\n@요약봇 잠깐 못봤는데 뭐 있었음\n@요약봇 아까 postgres 얘기 결론 뭐임\n메시지에 답장해서 ‘여기부터 요약’\n/요약 · /요약 오늘 · /요약 2시간"
+let help = "카톡에서 봇 계정을 멘션하고 자연스럽게 물어보세요.\n예: 오늘 중요한 얘기 뭐 있었어? / DB 얘기 결론 뭐야?\n특정 메시지부터 보려면 그 메시지에 답장하면서 봇을 멘션해주세요."
 
 let render ~max_bytes ~range ~intent ~messages ~notes (summary:Llm.summary) =
   let start = match range.lower, messages with

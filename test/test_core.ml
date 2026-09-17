@@ -23,14 +23,10 @@ let () =
   check "slash boundary" (detect (message "/요약서 작성") = None);
   check "mention accepted" ((invocation "@요약봇 오늘").trigger = Mention);
   check "native mention accepted" (Option.is_some (detect (message ~mentions:["bot"] "오늘 뭐있었어")));
-  check "reply accepted" ((Option.get (detect (message ~reply_to:"native-80" "여기부터 요약"))).trigger = Reply);
-  check "mention and reply produce one call"
-    ((Option.get (detect (message ~mentions:["bot"] ~reply_to:"native-80" "@요약봇 오늘"))).trigger = Mention);
-  check "fixed duration with topic"
-    (Intent.shortcut (invocation "/요약 2시간 postgres 결론") =
-     Summarize {scope=Last_minutes 120; topic=Some "postgres"; focus=Conclusions});
-  check "free language classified later" (Intent.shortcut (invocation "@요약봇 잠깐 못봤는데 뭐 있었음") = Classify);
-  check "natural today request is not mistaken for a topic" (Intent.shortcut (invocation "@요약봇 오늘 뭐 얘기함?") = Classify);
+  check "plain reply is ignored" (detect (message ~reply_to:"native-80" "여기부터 요약") = None);
+  check "slash command is ignored" (detect (message "/요약 오늘") = None);
+  check "reply with native mention is accepted"
+    (Option.is_some (detect (message ~mentions:["bot"] ~reply_to:"native-80" "이 얘기 어떻게 됐어?")));
   check "invalid model range rejected" (Result.is_error (Intent.validate (overview (Last_minutes (-1)))));
   let call = invocation "/요약" in
   let prior = message ~seq:90L ~created_at:(call.message.created_at -. 30.) "마지막 발언" in

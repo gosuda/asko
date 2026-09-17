@@ -72,7 +72,7 @@ cd ~/asko
 ./run-phone.sh check-config
 ```
 
-Run `./scripts/sync-iris-id.sh asko-phone` on the PC to save the Iris bot ID in the phone configuration and any existing local `config.local.json`. Add your chosen test room IDs as strings. `iris-info` itself does not edit configuration. Native mentions identify the account by ID. Only rooms in `rooms` can be stored, searched, or answered.
+Run `./scripts/sync-iris-id.sh asko-phone` on the PC to save the Iris bot ID in the phone configuration and any existing local `config.local.json`. Add your chosen test room IDs as strings. `iris-info` itself does not edit configuration. A native mention identifies the account by ID and is required for every request. Replies supply context only when they also mention the bot. Slash commands and fixed reply phrases do not invoke it. Only rooms in `rooms` can be stored, searched, or answered.
 
 ```sh
 ./run-phone.sh configure-iris
