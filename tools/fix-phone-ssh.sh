@@ -39,8 +39,13 @@ asko_pidfile=${asko_pidfile:-/data/data/com.termux/files/usr/var/run/sshd.pid}
 if [ -f "$asko_pidfile" ]; then
     asko_pid=$(cat "$asko_pidfile")
     case "$asko_pid" in ''|*[!0-9]*) exit 1;; esac
-    if [ -r "/proc/$asko_pid/exe" ]; then
-        test "$(readlink "/proc/$asko_pid/exe")" = /data/data/com.termux/files/usr/bin/sshd
+    if [ -r "/proc/$asko_pid/cmdline" ]; then
+        # Termux may execute sshd through linker64; /proc/PID/exe then names the linker.
+        asko_command=$(tr '\000' ' ' <"/proc/$asko_pid/cmdline")
+        case "$asko_command" in
+            *'/data/data/com.termux/files/usr/bin/sshd -D -e -f /data/data/com.termux/files/home/.ssh/asko-sshd.conf'*) ;;
+            *) printf '%s\n' 'Refusing to stop an unrelated process.' >&2; exit 1;;
+        esac
         kill "$asko_pid"
     fi
 fi
