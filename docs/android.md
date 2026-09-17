@@ -17,6 +17,26 @@ Install `gcc`, `make`, `git`, `curl`, `tar`, `bzip2`, `xz`, `unzip`, `patch`, `p
 
 Use `ASKO_TOOLCHAIN_DIR=/path/to/toolchain` to reuse tools. Set `ASKO_DISABLE_OPAM_SANDBOX=1` only on runners that cannot support opam's sandbox. Setup leaves shell profiles and system packages unchanged.
 
+For a regular opam environment, install OCaml 5.4.1 and the GMP and SQLite development libraries, then run `opam install . --deps-only --locked` and `dune build`. The Make targets wrap the project-local scripts:
+
+```sh
+make setup
+make test
+make setup-android
+make test-android SSH_TARGET=asko-phone
+make deploy SSH_TARGET=asko-phone
+```
+
+For local development after setup:
+
+```sh
+cp config.example.json config.local.json
+./scripts/dev dune exec asko -- check-config --config config.local.json
+./scripts/dev dune exec asko -- serve --config config.local.json
+```
+
+The phone needs no OCaml compiler or Linux container. Install Jina before starting the phone backend.
+
 ## Deploy and control
 
 Install local embeddings while the backend is stopped with `./scripts/deploy-jina-phone.sh asko-phone`, then deploy the backend:
@@ -30,11 +50,11 @@ make deploy SSH_TARGET=asko-phone
 
 Deployment verifies SHA256 checksums and switches the `current` symlink. It reuses identical releases, preserves configuration, secrets, and the database, and leaves running processes alone. Use `control-phone.sh restart` to load a new release. `~/asko/previous-release` records the previous target.
 
-The first configuration has `dry_run=true` and no allowed rooms. The backend listens on `127.0.0.1:8080`; Jina listens on `127.0.0.1:8081`. Both run as the Termux user. The supervisor restarts the pair after a process exits. `stop` leaves `var/disabled`, which also prevents startup after a reboot; `start` removes it.
+Consecutive requests are queued with no default cooldown. The first configuration has `dry_run=true` and no allowed rooms. The backend listens on `127.0.0.1:8080`; Jina listens on `127.0.0.1:8081`. Both run as the Termux user. The supervisor restarts the pair after a process exits. `stop` leaves `var/disabled`, which also prevents startup after a reboot; `start` removes it.
 
 ## Credentials and rooms
 
-Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. The default model is `deepseek/deepseek-v4.1-flash` with `reasoning_enabled=true`. The conversation loop uses tool calling; `response_format` is used only by the older summary helpers.
+Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. The default model is [DeepSeek V4.1 Flash](https://openrouter.ai/deepseek/deepseek-v4.1-flash) with `reasoning_enabled=true`. A 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) is added to the response allowance. The conversation loop uses tool calling; `response_format` is used only by the older summary helpers.
 
 You can also keep the key in a separate file. From a Bash session on the phone:
 
@@ -86,7 +106,7 @@ Start with dry-run and inspect `./run-phone.sh outbox`. Set `dry_run=false` when
 
 Jina uses the official `jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF` Q8_0 weights, about 233 MB, under CC-BY-NC-4.0. The installer pins the model checksum and llama.cpp revision `ebbb185227c31f1652f1445e2623563d2f67fe5a`.
 
-The server uses last-token pooling, 768 dimensions, two CPU threads, and a 4096-token context. asko sends conversation chunks of about 2000 bytes one at a time. The model ID separates its cache from older embeddings. `embedding_url` accepts only local addresses; local embedding calls carry no OpenRouter key and consume no OpenRouter budget.
+Jina listens at `http://127.0.0.1:8081/v1` and needs no API key. Queries use `Query: ` and conversation chunks use `Document: `. The server uses last-token pooling, 768 dimensions, two CPU threads, and a 4096-token context. asko sends conversation chunks of about 2000 bytes one at a time. The model ID separates its cache from older embeddings. `embedding_url` accepts only local addresses; local embedding calls carry no OpenRouter key and consume no OpenRouter budget.
 
 ## Boot service
 
