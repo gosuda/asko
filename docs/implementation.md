@@ -26,7 +26,7 @@ The conversational path passed a mock tool-call run covering source retrieval, a
 
 Focused checks cover unrelated edits and expiry, nickname updates, in-flight embedding writes, dependent answer requeueing, and a notice after source retries are exhausted.
 
-Nicknames are tracked per room and user ID. Room profile refreshes update current names while observed old names remain available as aliases. Names are filled in before indexing or model context is built. The agent can look up participants by name and filter history by speaker ID; duplicate names remain separate identities.
+Nicknames are tracked per room and user ID. Room profile refreshes update current names while observed old names remain available as aliases. Names are filled in before indexing or model context is built. The agent can look up participants by name and filter history by speaker ID; duplicate names remain separate identities. General questions can be answered from model knowledge without a history search.
 
 ## Remaining checks
 
