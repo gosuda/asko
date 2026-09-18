@@ -76,7 +76,7 @@ Install with `./scripts/deploy-iris-phone.sh asko-phone`. It downloads [Iris v0.
 
 The launcher gives Iris a private mount namespace and maps its `/sdcard` view to `/data/local/tmp/asko-iris/private-sdcard`. Its image cleanup stays in that private directory. Other apps keep their normal storage view, and the upstream APK is unchanged.
 
-The launcher blocks non-loopback access to port 3000 with IPv4 and IPv6 firewall rules. Iris files and logs stay under the root-owned `/data/local/tmp/asko-iris`. This text-only setup does not configure image delivery or automatic startup after reboot.
+The launcher blocks external access to Iris on port 3000 and rejects loopback connections from every UID except Termux, for both IPv4 and IPv6. It checks these rules even when Iris is already running and stops Iris if it cannot install them. Iris must keep `botHttpPort` at 3000; the launcher refuses to start it with another port. Iris files and logs stay under the root-owned `/data/local/tmp/asko-iris`. This text-only setup does not configure image delivery or automatic startup after reboot.
 
 If SSH was launched with a restricted capability bounding set, Magisk can return UID 0 without the capabilities needed for installation. In that case, open the Termux app on the phone and run the already staged installer:
 
