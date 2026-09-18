@@ -40,7 +40,7 @@ let default = {
   max_input_bytes=240000; max_history_bytes=2000000; max_response_bytes=7000; max_output_tokens=1800; daily_budget_tokens=500000;
   openrouter_url="https://openrouter.ai/api/v1";
   model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_object";
-  embedding_model="jina-v5-nano-retrieval-q8"; embedding_url="http://127.0.0.1:8081/v1";
+  embedding_model="openai/text-embedding-3-small"; embedding_url="https://openrouter.ai/api/v1";
   api_key=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
   allow_insecure_loopback=false;
 }
@@ -108,7 +108,8 @@ let of_json json = Json_util.protect (fun () ->
   valid_url ~https:true c.openrouter_url;
   valid_url ~https:false c.embedding_url;
   if not (List.mem (Uri.host (Uri.of_string c.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"])
-  then invalid "embedding_url must be local to this device";
+     && c.embedding_url<>c.openrouter_url
+  then invalid "embedding_url must be local or match openrouter_url";
   if not c.dry_run && (c.bot_id = "" || c.bot_id = "0") then invalid "bot_id is required before live delivery";
   c)
 
@@ -128,3 +129,5 @@ let api_key config = match env_value config.api_key_env with
   | Some _ as value -> value
   | None -> let value=String.trim config.api_key in if value="" then None else Some value
 let ingest_token config = env_value config.ingest_token_env
+let local_embeddings config =
+  List.mem (Uri.host (Uri.of_string config.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"]

@@ -35,11 +35,11 @@ cp config.example.json config.local.json
 ./scripts/dev dune exec asko -- serve --config config.local.json
 ```
 
-The phone needs no OCaml compiler or Linux container. Install Jina before starting the phone backend.
+The phone needs no OCaml compiler or Linux container. Embeddings use OpenRouter by default; local Jina is optional.
 
 ## Deploy and control
 
-Install local embeddings while the backend is stopped with `./scripts/deploy-jina-phone.sh asko-phone`, then deploy the backend:
+Deploy the backend:
 
 ```sh
 make deploy SSH_TARGET=asko-phone
@@ -50,7 +50,7 @@ make deploy SSH_TARGET=asko-phone
 
 Deployment verifies SHA256 checksums and switches the `current` symlink. It reuses identical releases, preserves configuration, secrets, and the database, and leaves running processes alone. Use `control-phone.sh restart` to load a new release. `~/asko/previous-release` records the previous target.
 
-Consecutive requests are queued with no default cooldown. The first configuration has `dry_run=true` and no allowed rooms. The backend listens on `127.0.0.1:8080`; Jina listens on `127.0.0.1:8081`. Both run as the Termux user. The supervisor restarts the pair after a process exits. `stop` leaves `var/disabled`, which also prevents startup after a reboot; `start` removes it.
+Consecutive requests are queued with no default cooldown. The first configuration has `dry_run=true` and no allowed rooms. The backend listens on `127.0.0.1:8080` and runs as the Termux user. The supervisor starts Jina only when `embedding_url` is local. `stop` leaves `var/disabled`, which also prevents startup after a reboot; `start` removes it.
 
 ## Credentials and rooms
 
@@ -102,11 +102,17 @@ This sets Iris's callback URL to the local backend with the generated webhook to
 
 Start with dry-run and inspect `./run-phone.sh outbox`. Set `dry_run=false` when ready to send replies. Dry-run still permits paid model calls. Verify the actual Iris message IDs, mention fields, and reply metadata in the chosen test room.
 
-## Local embeddings
+## Embeddings
+
+The default is `openai/text-embedding-3-small` at `https://openrouter.ai/api/v1`. It uses the same OpenRouter key as the chat model and sends up to 32 conversation chunks per request.
+
+### Optional local Jina
+
+To run Jina on the phone, stop the backend, run `./scripts/deploy-jina-phone.sh asko-phone`, and set `embedding_model` to `jina-v5-nano-retrieval-q8` and `embedding_url` to `http://127.0.0.1:8081/v1` before restarting.
 
 Jina uses the official `jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF` Q8_0 weights, about 233 MB, under CC-BY-NC-4.0. The installer pins the model checksum and llama.cpp revision `ebbb185227c31f1652f1445e2623563d2f67fe5a`.
 
-Jina listens at `http://127.0.0.1:8081/v1` and needs no API key. Queries use `Query: ` and conversation chunks use `Document: `. The server uses last-token pooling, 768 dimensions, two CPU threads, and a 4096-token context. asko sends conversation chunks of about 2000 bytes one at a time. The model ID separates its cache from older embeddings. `embedding_url` accepts only local addresses; local embedding calls carry no OpenRouter key and consume no OpenRouter budget.
+Jina listens at `http://127.0.0.1:8081/v1` and needs no API key. Queries use `Query: ` and conversation chunks use `Document: `. The server uses last-token pooling, 768 dimensions, two CPU threads, and a 4096-token context. asko sends conversation chunks of about 2000 bytes one at a time. The model ID separates its cache from older embeddings. `embedding_url` accepts a local address or the configured OpenRouter URL. Local embedding calls carry no OpenRouter key and consume no OpenRouter budget; remote calls use the key and the shared budget.
 
 ## Boot service
 

@@ -90,7 +90,7 @@ let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
       let rec fill pending = match pending with
         | [] -> Lwt.return (Ok ())
         | _ ->
-            let batch=take 1 pending in
+            let batch=take (if Config.local_embeddings config then 1 else 32) pending in
             let rest=List.filter (fun index -> not (List.mem index batch)) pending in
             Llm.embed llm (List.map (fun index -> values.(index).content) batch) >>= function
             | Error error -> Lwt.return (Error error)

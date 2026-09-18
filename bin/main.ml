@@ -68,6 +68,9 @@ let () =
          | Ok json when Json_util.field "success" json=Some (`Bool true) -> print_endline "Iris endpoint configured (token redacted)"
          | Ok _ -> die "Iris rejected endpoint configuration"
          | Error error -> die ("Iris configuration failed: " ^ Net.error_name error))
+    | "embedding-mode" ->
+        let c=configuration !config_path in
+        print_endline (if Config.local_embeddings c then "local" else "remote")
     | "check-config" ->
         let c = configuration !config_path in
         print_endline (Yojson.Safe.pretty_to_string (`Assoc [
