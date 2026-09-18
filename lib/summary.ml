@@ -15,7 +15,9 @@ let batches ~bytes messages =
 
 let generate llm ~intent ?request messages =
   let groups=batches ~bytes:(max 1024 (llm.Llm.config.max_input_bytes-8192)) messages in
-  if groups=[] || List.length groups>8 then Lwt.return (Error Llm.Input_too_large)
+  if groups=[] then Lwt.return (Error (Llm.Bad_response {stage="summary";reason="no messages"}))
+  else if List.length groups>16 then Lwt.return (Error (Llm.Limit_exceeded
+    {resource="summary_batches";actual=Some (List.length groups);limit=16}))
   else
     let rec summarize acc = function
       | [] -> Lwt.return (Ok (List.rev acc))

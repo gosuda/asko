@@ -184,7 +184,8 @@ context and request already make the intended coverage clear.|} in
              remember messages; Ok (`Assoc ["message",context ~full:true (List.hd messages)]))
     | _ -> Lwt.return (Ok (`Assoc ["error",`String "Unknown tool"])) in
   let rec loop rounds messages =
-    if rounds=0 then Lwt.return (Error Llm.Input_too_large) else
+    if rounds=0 then Lwt.return (Error (Llm.Limit_exceeded {resource="max_tool_rounds";
+      actual=Some config.max_tool_rounds;limit=config.max_tool_rounds})) else
     Llm.turn llm ~messages ~tools >>= function
     | Error error -> Lwt.return (Error error)
     | Ok assistant ->
@@ -193,9 +194,9 @@ context and request already make the intended coverage clear.|} in
         if calls=[] then
           let content=Json_util.optional Json_util.string (Json_util.field "content" assistant)
             |> Option.value ~default:"" |> String.trim in
-          if content="" then Lwt.return (Error Llm.Bad_response) else
+          if content="" then Lwt.return (Error (Llm.Bad_response {stage="conversation";reason="empty assistant content"})) else
           Lwt.return (Ok ({Llm.answer_text=Utf8.take answer_limit content;answer_sources=[]},visible ()))
-        else if List.length calls>8 then Lwt.return (Error Llm.Bad_response) else
+        else if List.length calls>8 then Lwt.return (Error (Llm.Bad_response {stage="conversation";reason="more than 8 tool calls in one response"})) else
           let rec handle results = function
             | [] -> loop (rounds-1) (messages @ [assistant] @ List.rev results)
             | call::rest ->
@@ -221,4 +222,4 @@ context and request already make the intended coverage clear.|} in
                         Lwt.return (Ok (`Assoc ["error",`String "Invalid tool arguments"])) | exn->Lwt.fail exn)
                     >>= function Error error->Lwt.return(Error error) | Ok result->finish_tool result
           in handle [] calls
-  in loop 8 messages
+  in loop config.max_tool_rounds messages

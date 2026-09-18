@@ -181,13 +181,13 @@ let () =
       check "local embeddings need no API key" (Result.is_ok absent_result);
       let before= !chats + !embeddings in
       Llm.embed (Llm.create {config with max_input_bytes=1000} store) [String.make 2000 'x'] >>= fun budget ->
-      check "budget stops request before network" (budget=Error Llm.Input_too_large && before= !chats + !embeddings);
+      check "budget stops request before network" ((match budget with Error (Llm.Limit_exceeded {resource="max_input_bytes";actual=Some n;limit=1000})->n>1000 | _->false) && before= !chats + !embeddings);
       let m=Iris_event.of_query_row ~source:config.source_id ~bot_id:config.bot_id
           (List.hd (raw_query fixture "SELECT * FROM chat_logs WHERE _id=200" [])) |> Result.get_ok in
       bad_citation:=true;
       Llm.summarize llm ~intent:(Types.overview Types.Today) ~messages:[m] () >>= fun rejected ->
       bad_citation:=false;
-      check "fabricated model evidence rejected over HTTP" (rejected=Error Llm.Bad_response);
+      check "fabricated model evidence rejected over HTTP" (match rejected with Error (Llm.Bad_response {stage="summary_validation";_})->true | _->false);
       Llm.summarize (Llm.create {config with response_format="json_schema"} store)
         ~intent:(Types.overview Types.Today) ~messages:[m] () >>= fun strict ->
       check "schema-capable models retain strict output support" (Result.is_ok strict);
@@ -210,6 +210,17 @@ let () =
       let embedded_before= !embeddings in
       Retrieval.select ~config ~store ~llm ~range ~version ~topic:"postgres" ~focus:Types.Conclusions history >>= fun _ ->
       check "cached document embeddings are reused" (!embeddings=embedded_before+1);
+      let request={Types.message={m with seq=209L;created_at=now};trigger=Types.Mention;prompt="postgres"} in
+      let capped={config with max_tool_rounds=1} in
+      let calls_before= !chats in
+      Conversation.run ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
+        ~request ~anchor:None ~reference:None ~history ~range ~version >>= fun capped_result ->
+      check "tool round limit stops at configured call count" (!chats=calls_before+1 &&
+        capped_result=Error (Llm.Limit_exceeded {resource="max_tool_rounds";actual=Some 1;limit=1}));
+      let capped={config with max_tool_rounds=2} in
+      Conversation.run ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
+        ~request ~anchor:None ~reference:None ~history ~range ~version >>= fun completed ->
+      check "final permitted round can answer" (Result.is_ok completed && !chats=calls_before+3);
       let dry_store=Store.open_ ":memory:" in
       let dry_message={m with Types.seq=209L;native_id=Some(native_id 209);text="/요약 도움말";created_at=now} in
       ignore(Store.put_message dry_store ~is_command:true dry_message);

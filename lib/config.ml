@@ -16,6 +16,7 @@ type t = {
   confirm_timeout : float;
   max_input_bytes : int;
   max_history_bytes : int;
+  max_tool_rounds : int;
   max_response_bytes : int;
   max_output_tokens : int;
   daily_budget_tokens : int;
@@ -37,7 +38,7 @@ let default = {
   iris_url="http://127.0.0.1:3000"; bot_id=""; rooms=[];
   dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=300.;
   cooldown=0.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
-  max_input_bytes=240000; max_history_bytes=2000000; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
+  max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=16; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
   openrouter_url="https://openrouter.ai/api/v1";
   model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_object";
   embedding_model="openai/text-embedding-3-small"; embedding_url="https://openrouter.ai/api/v1";
@@ -67,6 +68,7 @@ let of_json json = Json_util.protect (fun () ->
     confirm_timeout=f "confirm_timeout" d.confirm_timeout;
     max_input_bytes=i "max_input_bytes" d.max_input_bytes;
     max_history_bytes=i "max_history_bytes" d.max_history_bytes;
+    max_tool_rounds=i "max_tool_rounds" d.max_tool_rounds;
     max_response_bytes=i "max_response_bytes" d.max_response_bytes;
     max_output_tokens=i "max_output_tokens" d.max_output_tokens;
     daily_budget_tokens=i "daily_budget_tokens" d.daily_budget_tokens;
@@ -90,6 +92,7 @@ let of_json json = Json_util.protect (fun () ->
   if c.request_ttl <= 0. || c.http_timeout <= 0. || c.recovery_interval < 1. || c.reconcile_interval < 60.
      || c.send_interval < 0.2 || c.cooldown < 0. || c.confirm_timeout <= 0.
   then invalid "invalid timing configuration";
+  if c.max_tool_rounds < 1 || c.max_tool_rounds > 64 then invalid "max_tool_rounds must be 1..64";
   if c.max_input_bytes < 1000 || c.max_input_bytes > 2000000
      || c.max_history_bytes < c.max_input_bytes || c.max_history_bytes > 16000000
      || c.max_output_tokens < 100 || c.max_output_tokens > 16000
