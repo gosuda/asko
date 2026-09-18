@@ -36,25 +36,29 @@ let finish t job ?snapshot ?snapshot_version ?evidence body =
   Store.finish_job ?snapshot t.store job ~body ~dry_run:t.config.dry_run ~snapshot_version ~evidence;
   Lwt.return_unit
 
-let friendly_error = function
-  | Llm.Not_configured -> "아직 답변할 준비가 안 됐어요. 잠시 후 다시 불러주세요."
-  | Llm.Budget_exceeded -> "오늘 설정된 모델 사용량 한도에 도달했어요. 나중에 다시 불러주세요."
-  | Llm.Input_too_large -> "대화가 너무 많아요. 봇을 멘션하고 최근 2시간처럼 범위를 줄여서 불러주세요."
-  | _ -> "답변을 완료하지 못했어요. 잠시 후 다시 불러주세요."
+let diagnostic t (job:Store.job) error =
+  let details=Json_util.object_ (Llm.error_details error) in
+  `Assoc (details @ ["job_id",`String (Int64.to_string job.id);
+    "attempt",`Int job.attempts; "model",`String t.config.model;
+    "http_timeout_seconds",`Float t.config.http_timeout;
+    "request_ttl_seconds",`Float t.config.request_ttl])
 
 let failed t (job:Store.job) error =
-  log "job_failed" (Llm.error_name error);
+  let details=diagnostic t job error in
   let now=Unix.gettimeofday () in
-  if Llm.retryable error && job.attempts<3 && now+.5.<job.expires_at then
+  let retry=Llm.retryable error && job.attempts<3 && now+.5.<job.expires_at in
+  prerr_endline (Json_util.to_string (`Assoc ["event",`String "job_failed";
+    "retry",`Bool retry; "error",details]));
+  if retry then
     (Store.fail_job t.store job ~now ~retry:true ~reason:(Llm.error_name error); Lwt.return_unit)
-  else finish t job (friendly_error error)
+  else begin
+    (* A deadline failure still needs a deliverable diagnostic. *)
+    Store.run t.store "UPDATE jobs SET expires_at=MAX(expires_at,?) WHERE id=?"
+      [Store.real(now+.60.);Store.integer job.id];
+    finish t job ("asko 요청 실패\n" ^ Json_util.to_string details)
+  end
 
-let source_changed_notice t (job:Store.job) =
-  log "job_failed" "used_source_changed";
-  (* Allow the failure notice to be delivered even when the model's deadline ended. *)
-  Store.run t.store "UPDATE jobs SET expires_at=MAX(expires_at,?) WHERE id=?"
-    [Store.real(Unix.gettimeofday ()+.60.);Store.integer job.id];
-  finish t job "참고한 메시지가 계속 수정되어 답변을 마무리하지 못했어요. 잠시 후 다시 불러주세요."
+let source_changed_notice t job = failed t job Llm.Source_changed
 
 let resolve_anchor t request since =
   match request.reply_to, Store.anchor t.store request with
@@ -115,7 +119,8 @@ let process_job t (job:Store.job) =
       | Error error -> failed t job error
       | Ok (answer,evidence_messages) ->
           let body=Summary.render_answer ~max_bytes:t.config.max_response_bytes ~messages:evidence_messages answer in
-          let body=if Result.is_ok recovery then body else body ^ "\n(일부 대화 수집이 지연되어 저장된 내용으로 답했어요.)" in
+          let body=if Result.is_ok recovery then body else body ^ "\n[asko recovery_incomplete: " ^
+            (match recovery with Error error -> Net.error_name error | Ok () -> "ok") ^ "]" in
           let anchor_snapshot=match anchor with
             | Some m when m.is_bot -> [{m with text=""}]
             | Some m -> [m] | None -> [] in
@@ -126,7 +131,8 @@ let process_job t (job:Store.job) =
           finish t job ~snapshot ~snapshot_version:version ~evidence body))
     (function
       | Lwt.Canceled -> Lwt.fail Lwt.Canceled
-      | Store.History_too_large -> failed t job Llm.Input_too_large
+      | Store.History_too_large -> failed t job (Llm.Limit_exceeded
+          {resource="max_history_bytes";actual=None;limit=t.config.max_history_bytes})
       | Store.Stale_snapshot ->
           let now=Unix.gettimeofday () in
           log "job_retry" "used_source_changed";
@@ -135,9 +141,8 @@ let process_job t (job:Store.job) =
             Lwt.return_unit
           end else
             source_changed_notice t job
-      | Lwt_unix.Timeout -> failed t job (Llm.Network Net.Timeout)
-      | _ -> Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:true ~reason:"internal_error";
-          log "job_failed" "internal_error"; Lwt.return_unit)
+      | Lwt_unix.Timeout -> failed t job Llm.Request_timeout
+      | exn -> failed t job (Llm.Internal_error (Printexc.exn_slot_name exn)))
 
 let send_tick t =
   if t.config.dry_run then Lwt.return_unit else
@@ -184,7 +189,7 @@ let run ?on_ready ~stop t =
   let rec supervise name step delay () =
     if not (Lwt.is_sleeping stop) then Lwt.return_unit else
     Lwt.catch step (function Lwt.Canceled->Lwt.fail Lwt.Canceled
-      | _ -> log name "internal_error"; Lwt.return_unit)
+      | exn -> log name ("internal_error:" ^ Printexc.exn_slot_name exn); Lwt.return_unit)
     >>= fun () -> Lwt_unix.sleep delay >>= supervise name step delay in
   let jobs () = match Store.claim_job t.store ~now:(Unix.gettimeofday ()) with
     | None->Lwt.return_unit | Some job->process_job t job in

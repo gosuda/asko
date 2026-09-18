@@ -37,3 +37,32 @@ Nicknames are tracked per room and user ID. Room profile refreshes update curren
 Basic test-room ingestion and live replies have been observed. Broader conversational quality and phone sleep, reboot, and network transitions need further live use. The backend boot installer is prepared but has not been installed or tested across a reboot. Setup scripts ran against an existing dependency cache; a clean-machine installation has not been repeated.
 
 Live send tests use a designated test room. API keys and conversations stay out of Git.
+
+### Request limits and diagnostics
+
+`max_input_bytes` defaults to 1,000,000 bytes per serialized model request
+(including prompts, tools, and accumulated tool results). `max_history_bytes`
+defaults to 8,000,000 bytes when loading room history. These are byte limits, not
+model token limits; the provider's context limit still applies. Their configuration
+ceilings remain 2,000,000 and 16,000,000 bytes respectively.
+
+`max_tool_rounds` is configurable from 1 to 64 and defaults to 16 model calls per
+conversation, including the final answer. The overall `request_ttl` (300 seconds)
+and daily usage budget still apply. Existing explicit configuration values take
+precedence over the new defaults. On Android, edit `~/asko/config.local.json` and
+restart the service to apply overrides; deployment preserves this file.
+
+Failed requests return a JSON diagnostic with `code`, `job_id`, `attempt`, model,
+and timeout settings. The server logs the same diagnostic with a `retry` flag.
+Limit failures additionally include `resource`, `actual`, and `limit`; history
+loading stops at the cap, so its unknown total is represented by `actual: null`.
+Daily-budget `actual` is the existing conservative reservation plus the attempted
+request, not an invoice or an exact token count. HTTP failures include their status;
+request deadlines and exhausted tool rounds have distinct codes. Internal failures
+report the exception class; invalid model output includes its validation stage and
+reason. Source-edit races and incomplete recovery also expose
+specific codes. Terminal diagnostics receive a 60-second delivery grace period.
+
+Diagnostics deliberately omit credentials, raw request/response bodies, and
+exception arguments, which can contain chat text or secrets. Forward the diagnostic
+JSON when reporting a failure.

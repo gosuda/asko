@@ -1,7 +1,10 @@
 open Lwt.Infix
 open Types
 
-type error = Not_configured | Network of Net.error | Bad_response | Budget_exceeded | Input_too_large
+type error = Not_configured | Network of Net.error | Bad_response of { stage : string; reason : string }
+  | Request_timeout | Source_changed
+  | Limit_exceeded of { resource : string; actual : int option; limit : int }
+  | Internal_error of string
 type conclusion = Agreed | Disputed | Undecided | Not_requested
 type bullet = { text : string; sources : int64 list }
 type summary = { bullets : bullet list; conclusion : conclusion }
@@ -10,9 +13,23 @@ type t = { config : Config.t; store : Store.t }
 let create config store = {config; store}
 let error_name = function
   | Not_configured -> "model_not_configured" | Network error -> Net.error_name error
-  | Bad_response -> "model_invalid_response" | Budget_exceeded -> "daily_budget_exceeded"
-  | Input_too_large -> "input_too_large"
-let retryable = function Network error -> Net.retryable error | Bad_response -> true | _ -> false
+  | Bad_response _ -> "model_invalid_response"
+  | Request_timeout -> "request_deadline_exceeded"
+  | Source_changed -> "used_source_changed"
+  | Limit_exceeded {resource;_} -> resource ^ "_exceeded"
+  | Internal_error _ -> "internal_error"
+let retryable = function Network error -> Net.retryable error | Bad_response _ | Internal_error _ -> true | _ -> false
+
+let error_details error =
+  let fields = match error with
+    | Limit_exceeded {resource;actual;limit} ->
+        ["resource",`String resource; "actual",(match actual with None->`Null | Some n->`Int n);
+         "limit",`Int limit]
+    | Network (Net.Http_status status) -> ["http_status",`Int status]
+    | Bad_response {stage;reason} -> ["stage",`String stage;"reason",`String reason]
+    | Internal_error kind -> ["exception",`String kind]
+    | _ -> [] in
+  `Assoc (("code",`String (error_name error))::fields)
 
 let strings values = `List (List.map (fun value -> `String value) values)
 let enum values = `Assoc ["type", `String "string"; "enum", strings values]
@@ -36,9 +53,10 @@ let call t ~output_tokens ~path body =
       let size = String.length (Json_util.to_string body) in
       let reservation = size + output_tokens in
       let now = Unix.gettimeofday () in
-      if size > t.config.max_input_bytes then Lwt.return (Error Input_too_large)
+      if size > t.config.max_input_bytes then Lwt.return (Error (Limit_exceeded {resource="max_input_bytes";actual=Some size;limit=t.config.max_input_bytes}))
       else if reservation > t.config.daily_budget_tokens - Store.tokens_today t.store ~at:now then
-        Lwt.return (Error Budget_exceeded)
+        Lwt.return (Error (Limit_exceeded {resource="daily_budget_tokens";
+          actual=Some (Store.tokens_today t.store ~at:now + reservation);limit=t.config.daily_budget_tokens}))
       else begin
         (* Conservative reservation, including unsuccessful/ambiguous requests.
            It is a safety budget, not an invoice or an exact tokenizer count. *)
@@ -73,7 +91,7 @@ let turn t ~messages ~tools =
       let message=Json_util.required "message" choice in
       let fields=Json_util.object_ message |> List.filter (fun (key,_)->
         List.mem key ["role";"content";"tool_calls";"reasoning";"reasoning_details";"reasoning_content"]) in
-      `Assoc fields) with Ok message->Ok message | Error _->Error Bad_response)
+      `Assoc fields) with Ok message->Ok message | Error reason->Error (Bad_response {stage="chat_completion";reason}))
 
 let chat t ~name ~schema ~system ~user ~max_tokens =
   let reasoning, max_tokens = if t.config.reasoning_enabled then
@@ -107,7 +125,7 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
          | Some (`String "length") -> Json_util.invalid "truncated completion" | _ -> ());
         Json_util.required "message" choice |> Json_util.required "content" |> Json_util.string
         |> Yojson.Safe.from_string) with
-       | Ok json -> Ok json | Error _ -> Error Bad_response)
+       | Ok json -> Ok json | Error reason -> Error (Bad_response {stage="structured_completion";reason}))
 
 let reject_extra allowed json =
   if List.exists (fun (key,_) -> not (List.mem key allowed)) (Json_util.object_ json)
@@ -166,7 +184,8 @@ When merging drafts, preserve their original citations and do not create new fac
   | Error error -> Error error
   | Ok json -> (match decode_summary ~messages json with
       | Ok summary when intent.focus<>Conclusions || summary.conclusion<>Not_requested -> Ok summary
-      | _ -> Error Bad_response)
+      | Ok _ -> Error (Bad_response {stage="summary_validation";reason="requested conclusion missing"})
+      | Error reason -> Error (Bad_response {stage="summary_validation";reason}))
 
 let embed t ?(query=false) inputs =
   let local=Config.local_embeddings t.config in
@@ -178,7 +197,8 @@ let embed t ?(query=false) inputs =
     call t ~output_tokens:0 ~path:"/embeddings"
       (`Assoc (fields @ ["provider",`Assoc ["data_collection",`String "deny"]]))
     else if String.length (Json_util.to_string body)>t.config.max_input_bytes then
-    Lwt.return (Error Input_too_large)
+    Lwt.return (Error (Limit_exceeded {resource="max_input_bytes";
+      actual=Some (String.length (Json_util.to_string body));limit=t.config.max_input_bytes}))
     else Net.json ~body ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.embedding_url "/embeddings")
       >|= Result.map_error (fun error->Network error) in
   request >|= function
@@ -192,7 +212,7 @@ let embed t ?(query=false) inputs =
       if List.length data<>List.length inputs then Json_util.invalid "embedding count mismatch";
       List.mapi (fun index (actual,vector) ->
         if index<>actual then Json_util.invalid "invalid embedding index"; vector) data)
-    with Ok vectors->Ok vectors | Error _->Error Bad_response)
+    with Ok vectors->Ok vectors | Error reason->Error (Bad_response {stage="embedding_validation";reason}))
 
 let answer_schema = object_schema [
   "answer",string_schema;

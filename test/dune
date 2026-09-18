@@ -27,3 +27,8 @@
  (name test_web_fetch)
  (modules test_web_fetch)
  (libraries asko lwt.unix cohttp-lwt-unix ipaddr))
+
+(test
+ (name test_diagnostics)
+ (modules test_diagnostics)
+ (libraries asko unix yojson lwt.unix))

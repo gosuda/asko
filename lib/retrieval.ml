@@ -100,7 +100,7 @@ let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
             | Error error -> Lwt.return (Error error)
             | Ok embedded ->
                 if List.length embedded<>List.length batch || List.exists (fun v -> Array.length v<>Array.length query_vector) embedded
-                then Lwt.return (Error Llm.Bad_response)
+                then Lwt.return (Error (Llm.Bad_response {stage="retrieval";reason="document embedding count or dimension mismatch"}))
                 else begin
                   List.iter2 (fun index vector ->
                     let chunk=values.(index) in
@@ -123,4 +123,4 @@ let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
                 Store.snapshot_current store (snapshot chunk) && (semantic>=0.25 || exact>0.))
               |> List.sort (fun (_,_,a,_) (_,_,b,_) -> Float.compare b a) |> take 6 in
             Ok {messages=expand messages (List.concat_map (fun (_,_,_,chunk) -> chunk.members) hits);note=None})
-  | Ok _ -> Lwt.return (Error Llm.Bad_response)
+  | Ok _ -> Lwt.return (Error (Llm.Bad_response {stage="retrieval";reason="expected one query embedding"}))
