@@ -94,12 +94,27 @@ let open_ path =
      exec t "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL";
      (match count t "PRAGMA user_version" [] with
       | 0 -> transaction t (fun () -> exec t schema)
-      | 1 | 2 | 3 -> ()
+      | 1 | 2 | 3 | 4 | 5 -> ()
       | _ -> raise (Error "database schema is newer than this program"));
      if count t "PRAGMA user_version" [] = 1 then
        transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN snapshot_version INTEGER; PRAGMA user_version=2");
      if count t "PRAGMA user_version" [] = 2 then
        transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN evidence TEXT; PRAGMA user_version=3");
+     if count t "PRAGMA user_version" [] = 3 then
+       transaction t (fun () -> exec t "ALTER TABLE embeddings ADD COLUMN dependencies TEXT; PRAGMA user_version=4");
+     if count t "PRAGMA user_version" [] = 4 then
+       transaction t (fun () -> exec t {|
+         CREATE TABLE speaker_names (
+           source TEXT NOT NULL, room_id TEXT NOT NULL, user_id TEXT NOT NULL,
+           name TEXT NOT NULL, observed_at REAL NOT NULL, is_current INTEGER NOT NULL DEFAULT 0,
+           PRIMARY KEY(source,room_id,user_id,name));
+         CREATE UNIQUE INDEX speaker_current ON speaker_names(source,room_id,user_id) WHERE is_current=1;
+         INSERT INTO speaker_names(source,room_id,user_id,name,observed_at)
+           SELECT source,room_id,sender_id,sender_name,MAX(created_at) FROM messages
+           WHERE sender_name<>sender_id AND sender_name<>'' AND deleted=0 AND is_bot=0
+           GROUP BY source,room_id,sender_id,sender_name;
+         PRAGMA user_version=5;
+       |});
      exec t "CREATE INDEX IF NOT EXISTS messages_retention ON messages(created_at)";
      t
    with exn -> ignore (Sqlite3.db_close t.db); raise exn)
@@ -107,6 +122,41 @@ let close t = ignore (Sqlite3.db_close t.db)
 let optional_text stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_text stmt col)
 let optional_int64 stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_int64 stmt col)
 let optional_float stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_double stmt col)
+
+let observe_name t ~source ~room ~user_id ~name ~at ~current =
+  let name=String.trim name in
+  if name<>"" && name<>user_id && String.is_valid_utf_8 name then begin
+    let name=Utf8.take 512 name in
+    if current then run t "UPDATE speaker_names SET is_current=0 WHERE source=? AND room_id=? AND user_id=?"
+      [text source;text room;text user_id];
+    run t {|INSERT INTO speaker_names VALUES(?,?,?,?,?,?)
+      ON CONFLICT(source,room_id,user_id,name) DO UPDATE SET
+      observed_at=MAX(observed_at,excluded.observed_at),is_current=MAX(is_current,excluded.is_current)|}
+      [text source;text room;text user_id;text name;real at;boolean current]
+  end
+
+let known_speakers t ~source ~room =
+  let values=rows t {|SELECT user_id,name FROM speaker_names WHERE source=? AND room_id=?
+    ORDER BY user_id,is_current DESC,observed_at DESC,name|} [text source;text room]
+    (fun s->Sqlite3.column_text s 0,Sqlite3.column_text s 1) in
+  let rec group acc = function
+    | [] -> List.rev acc
+    | (id,name)::rest ->
+        let same,rest=List.partition (fun (other,_)->other=id) rest in
+        group ((id,name,List.map snd same)::acc) rest in
+  group [] values
+
+let speaker_name t ~source ~room ~user_id =
+  one t {|SELECT name FROM speaker_names WHERE source=? AND room_id=? AND user_id=?
+    ORDER BY is_current DESC,observed_at DESC LIMIT 1|}
+    [text source;text room;text user_id] (fun s->Sqlite3.column_text s 0)
+
+let with_speaker_names t ~source ~room messages =
+  let names=Hashtbl.create 64 in
+  List.iter (fun (id,name,_)->Hashtbl.replace names id name) (known_speakers t ~source ~room);
+  List.map (fun (m:message) ->
+    if m.source<>source || m.room_id<>room then m else
+    match Hashtbl.find_opt names m.sender_id with Some sender_name->{m with sender_name} | None->m) messages
 let message_columns = "source,seq,native_id,room_id,sender_id,sender_name,created_at,text,reply_to,mentions,is_bot,deleted"
 let message_row stmt : message = {
   source=Sqlite3.column_text stmt 0; seq=Sqlite3.column_int64 stmt 1;
@@ -121,13 +171,60 @@ let get_message t ~source ~seq =
   one t ("SELECT " ^ message_columns ^ " FROM messages WHERE source=? AND seq=?")
     [text source; integer seq] message_row
 
-let invalidate_embeddings t ~source ~room =
-  run t "DELETE FROM embeddings WHERE source=? AND room_id=?" [text source; text room];
-  run t {|UPDATE jobs SET state='failed',last_error='source_changed' WHERE id IN
-    (SELECT job_id FROM outbox WHERE source=? AND room_id=? AND snapshot_version IS NOT NULL AND state='pending')|}
-    [text source; text room];
-  run t {|UPDATE outbox SET body='',evidence=NULL,state=CASE WHEN state='pending' THEN 'cancelled' ELSE state END
-    WHERE source=? AND room_id=? AND snapshot_version IS NOT NULL|} [text source; text room]
+let same_content (a:message) (b:message) =
+  a.source=b.source && a.seq=b.seq && a.native_id=b.native_id && a.room_id=b.room_id
+  && a.sender_id=b.sender_id && a.created_at=b.created_at && a.text=b.text
+  && a.reply_to=b.reply_to && a.is_bot=b.is_bot && a.deleted=b.deleted
+
+let snapshot_current t messages = List.for_all (fun (m:message) ->
+  match get_message t ~source:m.source ~seq:m.seq with
+  | Some current -> same_content m current && not current.deleted
+  | None -> false) messages
+
+let ensure_snapshot t messages =
+  if not(snapshot_current t messages) then begin
+    let ids=messages |> List.filter (fun m->not(snapshot_current t [m]))
+      |> List.to_seq |> Seq.take 8 |> List.of_seq
+      |> List.map (fun (m:message)->`String(Int64.to_string m.seq)) in
+    prerr_endline(Json_util.to_string (`Assoc ["event",`String "used_source_changed";"message_ids",`List ids]));
+    raise Stale_snapshot
+  end
+
+let dependency_ids value = Json_util.protect (fun () ->
+  Yojson.Safe.from_string value |> Json_util.list Json_util.id)
+
+let evidence_uses evidence seq =
+  let id=Int64.to_string seq in
+  match evidence with
+  | None -> true
+  | Some value ->
+      (match Json_util.protect (fun () ->
+        let json=Yojson.Safe.from_string value in
+        let ids name=Json_util.optional (Json_util.list Json_util.id) (Json_util.field name json) in
+        let selected=ids "selected_ids" and input=ids "input_ids" in
+        match selected,input with
+        | None,None -> true
+        | _ -> List.mem id (Option.value ~default:[] selected @ Option.value ~default:[] input)) with
+       | Ok value -> value | Error _ -> true)
+
+let invalidate_message t ~source ~room ~seq =
+  let embeddings=rows t "SELECT cache_key,model,dependencies FROM embeddings WHERE source=? AND room_id=?"
+    [text source;text room] (fun s->Sqlite3.column_text s 0,Sqlite3.column_text s 1,optional_text s 2) in
+  List.iter (fun (key,model,dependencies) ->
+    let affected=match dependencies with None->true | Some value ->
+      match dependency_ids value with Ok ids->List.mem (Int64.to_string seq) ids | Error _->true in
+    if affected then run t "DELETE FROM embeddings WHERE source=? AND room_id=? AND cache_key=? AND model=?"
+      [text source;text room;text key;text model]) embeddings;
+  let outputs=rows t {|SELECT id,job_id,state,evidence FROM outbox
+    WHERE source=? AND room_id=? AND snapshot_version IS NOT NULL AND body<>''|}
+    [text source;text room] (fun s->Sqlite3.column_int64 s 0,Sqlite3.column_int64 s 1,
+      Sqlite3.column_text s 2,optional_text s 3) in
+  List.iter (fun (id,job,state,evidence) ->
+    if evidence_uses evidence seq then
+      if state="pending" then begin
+        run t "DELETE FROM outbox WHERE id=?" [integer id];
+        run t "UPDATE jobs SET state='queued',available_at=0,last_error='source_changed' WHERE id=?" [integer job]
+      end else run t "UPDATE outbox SET body='',evidence=NULL WHERE id=?" [integer id]) outputs
 
 let room_version t ~source ~room =
   count t "SELECT version FROM rooms WHERE source=? AND room_id=?" [text source; text room]
@@ -156,9 +253,9 @@ let put_message t ~is_command (message : message) =
        boolean message.is_bot; boolean message.deleted; boolean is_command];
     run t "INSERT INTO rooms VALUES(?,?,0) ON CONFLICT(source,room_id) DO NOTHING"
       [text message.source; text message.room_id];
-    if old <> None then begin
+    if (match old with Some prior -> not(same_content prior message) | None->false) then begin
       run t "UPDATE rooms SET version=version+1 WHERE source=? AND room_id=?" [text message.source; text message.room_id];
-      invalidate_embeddings t ~source:message.source ~room:message.room_id
+      invalidate_message t ~source:message.source ~room:message.room_id ~seq:message.seq
     end
   end;
   old = None
@@ -241,7 +338,8 @@ let claim_job t ~now = transaction t (fun () ->
   | Some (id, source, seq, trigger, prompt, attempts, expires_at) ->
       let message = Option.get (get_message t ~source ~seq) in
       let trigger = match trigger with "mention" -> Mention | "reply" -> Reply | _ -> Slash in
-      run t "UPDATE jobs SET state='running',attempts=attempts+1 WHERE id=?" [integer id];
+      let prompt=if trigger=Mention then message.text else prompt in
+      run t "UPDATE jobs SET state='running',attempts=attempts+1,prompt=? WHERE id=?" [text prompt;integer id];
       Some {id; invocation={message; trigger; prompt}; attempts=attempts+1; expires_at})
 
 let recover_jobs t ~now = transaction t (fun () ->
@@ -250,10 +348,11 @@ let recover_jobs t ~now = transaction t (fun () ->
   exec t "UPDATE outbox SET state='uncertain',error='process_restarted_during_send' WHERE state='sending'";
   exec t "UPDATE jobs SET state='uncertain' WHERE id IN (SELECT job_id FROM outbox WHERE state='uncertain')")
 
-let finish_job t job ~body ~dry_run ~snapshot_version ~evidence = transaction t (fun () ->
+let finish_job ?snapshot t job ~body ~dry_run ~snapshot_version ~evidence = transaction t (fun () ->
   let message = job.invocation.message in
-  (match snapshot_version with
-   | Some expected when expected <> room_version t ~source:message.source ~room:message.room_id -> raise Stale_snapshot
+  (match snapshot,snapshot_version with
+   | Some messages,_ -> ensure_snapshot t messages
+   | None,Some expected when expected <> room_version t ~source:message.source ~room:message.room_id -> raise Stale_snapshot
    | _ -> ());
   run t "INSERT INTO outbox(job_id,source,room_id,body,state,snapshot_version,evidence) VALUES(?,?,?,?,?,?,?) ON CONFLICT(job_id) DO NOTHING"
     [integer job.id; text message.source; text message.room_id; text body; text (if dry_run then "dry_run" else "pending");
@@ -348,13 +447,17 @@ let get_embedding t ~source ~room ~key ~model ~content =
        | Error _ -> None)
   | _ -> None
 
-let put_embedding t ~source ~room ~key ~model ~content ~at ~version vector =
-  if room_version t ~source ~room <> version then raise Stale_snapshot;
+let put_embedding ?snapshot t ~source ~room ~key ~model ~content ~at ~version vector =
+  (match snapshot with Some messages -> ensure_snapshot t messages
+   | None -> if room_version t ~source ~room <> version then raise Stale_snapshot);
   if Array.length vector = 0 || not (Array.for_all Float.is_finite vector) then raise (Error "invalid embedding");
   let data = `List (Array.to_list (Array.map (fun value -> `Float value) vector)) in
-  run t {|INSERT INTO embeddings VALUES(?,?,?,?,?,?,?) ON CONFLICT(source,room_id,cache_key,model)
-    DO UPDATE SET content=excluded.content,vector=excluded.vector,created_at=excluded.created_at|}
-    [text source; text room; text key; text model; text content; text (Json_util.to_string data); real at]
+  let dependencies=Option.map (fun messages -> Json_util.to_string (`List (List.map
+    (fun (m:message)->`String(Int64.to_string m.seq)) messages))) snapshot in
+  run t {|INSERT INTO embeddings(source,room_id,cache_key,model,content,vector,created_at,dependencies)
+    VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source,room_id,cache_key,model)
+    DO UPDATE SET content=excluded.content,vector=excluded.vector,created_at=excluded.created_at,dependencies=excluded.dependencies|}
+    [text source; text room; text key; text model; text content; text (Json_util.to_string data); real at; opt_text dependencies]
 
 let token_day at = Int64.of_float (floor (at /. 86400.))
 let record_tokens t ~at tokens =
@@ -366,10 +469,16 @@ let tokens_today t ~at = count t "SELECT tokens FROM usage WHERE day=?" [integer
 let purge t ~before = transaction t (fun () ->
   let changed = rows t "SELECT DISTINCT source,room_id FROM messages WHERE created_at<?" [real before]
       (fun s -> Sqlite3.column_text s 0, Sqlite3.column_text s 1) in
+  let expired=rows t "SELECT source,room_id,seq FROM messages WHERE created_at<?" [real before]
+    (fun s->Sqlite3.column_text s 0,Sqlite3.column_text s 1,Sqlite3.column_int64 s 2) in
+  List.iter (fun (source,room,seq)->invalidate_message t ~source ~room ~seq) expired;
   List.iter (fun (source, room) ->
-    run t "UPDATE rooms SET version=version+1 WHERE source=? AND room_id=?" [text source; text room];
-    invalidate_embeddings t ~source ~room) changed;
+    run t "UPDATE rooms SET version=version+1 WHERE source=? AND room_id=?" [text source; text room]) changed;
   run t "DELETE FROM messages WHERE created_at<?" [real before];
+  run t "DELETE FROM speaker_names WHERE observed_at<? AND is_current=0" [real before];
+  exec t {|DELETE FROM speaker_names WHERE NOT EXISTS (
+    SELECT 1 FROM messages m WHERE m.source=speaker_names.source AND m.room_id=speaker_names.room_id
+    AND m.sender_id=speaker_names.user_id AND m.deleted=0)|};
   run t "DELETE FROM embeddings WHERE created_at<?" [real before];
   List.length changed)
 

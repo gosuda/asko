@@ -47,16 +47,22 @@ let observed_reply t ~room ~after ~body =
 
 let configuration t = Net.json ~timeout:t.config.http_timeout `GET (Net.endpoint t.config.iris_url "/config")
 
-let sender_name t user_id =
-  let name = function
-    | Ok [row] -> (match Json_util.protect (fun () -> Json_util.required "name" row |> Json_util.string) with
-        | Ok value when String.trim value<>"" && String.is_valid_utf_8 value -> Some (Utf8.take 512 value)
-        | _ -> None)
-    | _ -> None in
-  query t "SELECT nickname AS name, enc FROM db2.open_chat_member WHERE user_id = ? LIMIT 2" [user_id]
-  >>= fun result -> match name result with
-  | Some _ as value -> Lwt.return value
-  | None -> query t "SELECT name, enc FROM db2.friends WHERE id = ? LIMIT 1" [user_id] >|= name
+let room_names t room =
+  query t {|SELECT user_id,nickname AS name,enc FROM db2.open_chat_member
+    WHERE involved_chat_id = ? OR link_id = (SELECT link_id FROM chat_rooms WHERE id = ? AND link_id<>0)
+    ORDER BY CASE WHEN involved_chat_id = ? THEN 0 ELSE 1 END,_id DESC|} [room;room;room]
+  >|= function
+  | Error error->Error error
+  | Ok rows ->
+      let seen=Hashtbl.create 64 in
+      Ok (List.filter_map (fun row ->
+        match Json_util.protect (fun ()->
+          let id=Json_util.required "user_id" row |> Json_util.id in
+          let name=Json_util.required "name" row |> Json_util.string |> String.trim in
+          id,name) with
+        | Ok (id,name) when name<>"" && not(Hashtbl.mem seen id) ->
+            Hashtbl.add seen id ();Some(id,Utf8.take 512 name)
+        | _ -> None) rows)
 
 let find_anchor t ~room ~native_id ~since =
   query t "SELECT * FROM chat_logs WHERE chat_id = ? AND id = ? AND created_at >= ? LIMIT 2"

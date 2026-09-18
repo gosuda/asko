@@ -3,18 +3,37 @@ open Lwt.Infix
 type t = {
   config : Config.t; store : Store.t; iris : Iris.t; llm : Llm.t;
   recovery_lock : Lwt_mutex.t; mutable next_send_at : float;
+  name_refresh : (string,float) Hashtbl.t;
 }
 let create config store = {
   config; store; iris=Iris.create config; llm=Llm.create config store;
-  recovery_lock=Lwt_mutex.create (); next_send_at=Store.last_send_at store +. config.Config.send_interval;
+  recovery_lock=Lwt_mutex.create (); name_refresh=Hashtbl.create 8; next_send_at=Store.last_send_at store +. config.Config.send_interval;
 }
 let log event code =
   prerr_endline (Json_util.to_string (`Assoc ["event",`String event;"code",`String code]))
 let recover t ?through room = Lwt_mutex.with_lock t.recovery_lock (fun () ->
   Recovery.room ~config:t.config ~store:t.store ~iris:t.iris ?through room)
 
-let finish t job ?snapshot_version ?evidence body =
-  Store.finish_job t.store job ~body ~dry_run:t.config.dry_run ~snapshot_version ~evidence;
+let refresh_names t room =
+  let now=Unix.gettimeofday () in
+  match Hashtbl.find_opt t.name_refresh room with
+  | Some at when now-.at<60. -> Lwt.return_unit
+  | _ ->
+      Hashtbl.replace t.name_refresh room now;
+      Iris.room_names t.iris room >|= function
+      | Error error -> log "names_refresh_failed" (Net.error_name error)
+      | Ok names -> Store.transaction t.store (fun () ->
+          List.iter (fun (user_id,name)->Store.observe_name t.store ~source:t.config.source_id
+            ~room ~user_id ~name ~at:now ~current:true) names)
+
+let finish t job ?snapshot ?snapshot_version ?evidence body =
+  let sender=job.Store.invocation.message in
+  refresh_names t sender.room_id >>= fun () ->
+  let name=Store.speaker_name t.store ~source:sender.source ~room:sender.room_id ~user_id:sender.sender_id
+    |> Option.value ~default:sender.sender_name in
+  let prefix="@" ^ Trigger.normalize name ^ "\n" in
+  let body=prefix ^ Utf8.take (max 0 (t.config.max_response_bytes-String.length prefix)) body in
+  Store.finish_job ?snapshot t.store job ~body ~dry_run:t.config.dry_run ~snapshot_version ~evidence;
   Lwt.return_unit
 
 let friendly_error = function
@@ -29,6 +48,13 @@ let failed t (job:Store.job) error =
   if Llm.retryable error && job.attempts<3 && now+.5.<job.expires_at then
     (Store.fail_job t.store job ~now ~retry:true ~reason:(Llm.error_name error); Lwt.return_unit)
   else finish t job (friendly_error error)
+
+let source_changed_notice t (job:Store.job) =
+  log "job_failed" "used_source_changed";
+  (* Allow the failure notice to be delivered even when the model's deadline ended. *)
+  Store.run t.store "UPDATE jobs SET expires_at=MAX(expires_at,?) WHERE id=?"
+    [Store.real(Unix.gettimeofday ()+.60.);Store.integer job.id];
+  finish t job "참고한 메시지가 계속 수정되어 답변을 마무리하지 못했어요. 잠시 후 다시 불러주세요."
 
 let resolve_anchor t request since =
   match request.reply_to, Store.anchor t.store request with
@@ -58,21 +84,18 @@ let reply_context t request since =
   | _ -> Lwt.return_none
 
 let speaker_names t messages =
-  let names=Hashtbl.create 8 in
-  Lwt_list.map_s (fun (m:message) ->
-    if m.sender_name<>m.sender_id then Lwt.return m else
-    (match Hashtbl.find_opt names m.sender_id with
-     | Some name -> Lwt.return name
-     | None -> Iris.sender_name t.iris m.sender_id >|= fun name ->
-         let name=Option.value ~default:m.sender_id name in
-         Hashtbl.add names m.sender_id name; name)
-    >|= fun sender_name -> {m with sender_name}) messages
+  match messages with
+  | [] -> Lwt.return []
+  | (m:message)::_ -> refresh_names t m.room_id >|= fun () ->
+      Store.with_speaker_names t.store ~source:m.source ~room:m.room_id messages
 
 let process_job t (job:Store.job) =
   let request=job.invocation.message in
   if request.source<>t.config.source_id || not (Config.allowed t.config request.room_id) || request.deleted || request.is_bot
      || job.invocation.trigger<>Mention || Trigger.detect ~bot_id:t.config.bot_id request=None then
     (Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:false ~reason:"scope_changed"; Lwt.return_unit)
+  else if job.attempts>3 then
+    source_changed_notice t job
   else Lwt.catch (fun () ->
     Lwt_unix.with_timeout (max 0.1 (job.expires_at-.Unix.gettimeofday ())) (fun () ->
       recover t ~through:request.seq request.room_id >>= fun recovery ->
@@ -82,22 +105,36 @@ let process_job t (job:Store.job) =
       let reference=Store.answer_reference t.store request anchor in
       let range={source=request.source;room_id=request.room_id;lower=At_time since;
         before_seq=request.seq;through_time=request.created_at;retention_start=since;note=None} in
-      let history=Store.messages ~max_bytes:t.config.max_history_bytes t.store range in
+      refresh_names t request.room_id >>= fun () ->
+      let history=Store.messages ~max_bytes:t.config.max_history_bytes t.store range
+        |> Store.with_speaker_names t.store ~source:request.source ~room:request.room_id in
       let version=Store.room_version t.store ~source:request.source ~room:request.room_id in
+      let inherited=Store.reference_messages t.store range reference in
       Conversation.run ~config:t.config ~store:t.store ~llm:t.llm ~name_messages:(speaker_names t)
         ~request:job.invocation ~anchor ~reference ~history ~range ~version >>= function
       | Error error -> failed t job error
       | Ok (answer,evidence_messages) ->
           let body=Summary.render_answer ~max_bytes:t.config.max_response_bytes ~messages:evidence_messages answer in
           let body=if Result.is_ok recovery then body else body ^ "\n(일부 대화 수집이 지연되어 저장된 내용으로 답했어요.)" in
-          let evidence=`Assoc ["selected_ids",`List (List.map (fun (m:message)->`String(Int64.to_string m.seq)) evidence_messages)] in
-          finish t job ~snapshot_version:version ~evidence body))
+          let anchor_snapshot=match anchor with
+            | Some m when m.is_bot -> [{m with text=""}]
+            | Some m -> [m] | None -> [] in
+          let snapshot=List.sort_uniq (fun (a:message) b->Int64.compare a.seq b.seq)
+              (request :: anchor_snapshot @ inherited @ evidence_messages) in
+          let evidence=`Assoc ["selected_ids",`List (List.map (fun (m:message)->`String(Int64.to_string m.seq)) evidence_messages);
+            "input_ids",`List(List.map (fun (m:message)->`String(Int64.to_string m.seq)) snapshot)] in
+          finish t job ~snapshot ~snapshot_version:version ~evidence body))
     (function
       | Lwt.Canceled -> Lwt.fail Lwt.Canceled
       | Store.History_too_large -> failed t job Llm.Input_too_large
       | Store.Stale_snapshot ->
-          Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:true ~reason:"source_changed";
-          Lwt.return_unit
+          let now=Unix.gettimeofday () in
+          log "job_retry" "used_source_changed";
+          if job.attempts<3 && now+.5.<job.expires_at then begin
+            Store.fail_job t.store job ~now ~retry:true ~reason:"source_changed";
+            Lwt.return_unit
+          end else
+            source_changed_notice t job
       | Lwt_unix.Timeout -> failed t job (Llm.Network Net.Timeout)
       | _ -> Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:true ~reason:"internal_error";
           log "job_failed" "internal_error"; Lwt.return_unit)

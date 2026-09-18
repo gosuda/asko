@@ -38,6 +38,33 @@ let () =
     | "serve" -> serve (configuration !config_path)
     | "status" -> let config = configuration !config_path in
         with_store config (fun store -> print_endline (Yojson.Safe.pretty_to_string (Store.stats store)))
+    | "diagnose-jobs" ->
+        let config=configuration !config_path in
+        with_store config (fun store ->
+          let now=Unix.gettimeofday () in
+          let rows=Store.rows store {|SELECT j.id,j.state,j.created_at,j.available_at,j.expires_at,
+            j.last_error,o.state,o.error FROM jobs j LEFT JOIN outbox o ON o.job_id=j.id
+            ORDER BY j.id DESC LIMIT 12|} [] (fun s ->
+            let optional i=Json_util.option (fun x->`String x) (Store.optional_text s i) in
+            `Assoc ["job_id",`String(Int64.to_string(Sqlite3.column_int64 s 0));
+              "state",`String(Sqlite3.column_text s 1);
+              "age_seconds",`Int(int_of_float(now-.Sqlite3.column_double s 2));
+              "ready_in_seconds",`Int(int_of_float(Sqlite3.column_double s 3-.now));
+              "expires_in_seconds",`Int(int_of_float(Sqlite3.column_double s 4-.now));
+              "job_error",optional 5;"delivery_state",optional 6;"delivery_error",optional 7]) in
+          print_endline(Json_util.to_string (`List rows)))
+    | "sync-names" ->
+        let config=configuration !config_path in
+        with_store config (fun store -> Lwt_main.run (
+          let open Lwt.Infix in
+          Lwt_list.iter_s (fun room -> Iris.room_names (Iris.create config) room >|= function
+            | Error error -> die ("Nickname sync failed: " ^ Net.error_name error)
+            | Ok names ->
+                Store.transaction store (fun () -> List.iter (fun (user_id,name) ->
+                  Store.observe_name store ~source:config.source_id ~room ~user_id ~name
+                    ~at:(Unix.gettimeofday ()) ~current:true) names);
+                print_endline(Json_util.to_string (`Assoc ["room_id",`String room;"profiles",`Int(List.length names)]))
+            ) config.rooms))
     | "outbox" -> let config = configuration !config_path in
         with_store config (fun store ->
           Store.recent_outbox store |> List.map (fun (item:Store.outgoing) -> `Assoc [
@@ -68,6 +95,38 @@ let () =
          | Ok json when Json_util.field "success" json=Some (`Bool true) -> print_endline "Iris endpoint configured (token redacted)"
          | Ok _ -> die "Iris rejected endpoint configuration"
          | Error error -> die ("Iris configuration failed: " ^ Net.error_name error))
+    | "embedding-mode" ->
+        let c=configuration !config_path in
+        print_endline (if Config.local_embeddings c then "local" else "remote")
+    | "diagnose-recovery" ->
+        let config=configuration !config_path in
+        with_store config (fun store -> Lwt_main.run (
+          let open Lwt.Infix in
+          Lwt_list.iter_s (fun room ->
+            let cursor=Store.cursor store ~source:config.source_id ~room in
+            let report fields=print_endline (Json_util.to_string (`Assoc (
+              ["room_id",`String room;"cursor",`String(Int64.to_string cursor)] @ fields))) in
+            let iris=Iris.create config in
+            Iris.latest iris room >>= function
+            | Error error -> report ["stage",`String "latest";"error",`String(Net.error_name error)]; Lwt.return_unit
+            | Ok (latest,_) ->
+                Iris.page iris ~room ~after:cursor ~through:latest
+                  ~since:(Unix.gettimeofday () -. float_of_int(config.retention_days*86400))
+                >|= function
+                | Error error -> report ["stage",`String "page";"error",`String(Net.error_name error)]
+                | Ok rows ->
+                    let kind = function `Assoc _->"object" | `List _->"array" | `Null->"null" | `String _->"string" | _->"scalar" in
+                    let bad=List.filter_map (fun row ->
+                      match Iris_event.of_query_row ~source:config.source_id ~bot_id:config.bot_id row with
+                      | Ok _ -> None
+                      | Error reason ->
+                          let embedded field=try kind(Iris_event.embedded field row) with _->"invalid" in
+                          let id=match Json_util.protect (fun ()->Json_util.required "_id" row |> Json_util.id) with Ok id->id | Error _->"missing" in
+                          let bytes=match Json_util.field "message" row with Some (`String text)->String.length text | _->0 in
+                          Some (`Assoc ["id",`String id;"reason",`String reason;"message_bytes",`Int bytes;
+                            "attachment_type",`String(embedded "attachment");"metadata_type",`String(embedded "v")])) rows in
+                    report ["latest",`String(Int64.to_string latest);"rows",`Int(List.length rows);"invalid_rows",`List bad]
+          ) config.rooms))
     | "check-config" ->
         let c = configuration !config_path in
         print_endline (Yojson.Safe.pretty_to_string (`Assoc [
@@ -82,7 +141,7 @@ let () =
          | Ok (200, body) -> Printf.printf "{\"https\":true,\"status\":200,\"bytes\":%d}\n" (String.length body)
          | Ok (status, _) -> die ("HTTPS probe status " ^ string_of_int status)
          | Error error -> die ("HTTPS probe failed: " ^ Net.error_name error))
-    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | backup --output path | probe-https | version [--config path]"
+    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backup --output path | probe-https | version [--config path]"
   with
   | Store.Error error -> die ("database error: " ^ error)
   | Sys_error _ -> die "filesystem operation failed"

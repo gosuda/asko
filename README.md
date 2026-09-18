@@ -1,8 +1,8 @@
 # asko
 
-An experimental AI assistant for KakaoTalk OpenChat, written in OCaml.
+An experimental AI assistant for KakaoTalk OpenChat, written in OCaml, with a focus on conversation summaries.
 
-Mention the bot to catch up on a conversation or ask about something discussed. Reply to a message and mention the bot to give it context. You can follow up on its answers the same way.
+Mention the bot to catch up on a conversation, ask a question, or get help with a task. Reply to a message and mention the bot to give it context. You can follow up on its answers the same way.
 
 ## Use
 

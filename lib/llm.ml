@@ -62,7 +62,7 @@ let turn t ~messages ~tools =
     else `Assoc ["enabled",`Bool false] in
   let body=`Assoc ["model",`String t.config.model;"messages",`List messages;
     "tools",`List tools;"tool_choice",`String "auto";
-    "max_tokens",`Int output;"reasoning",reasoning;"temperature",`Float 0.1;
+    "max_tokens",`Int output;"reasoning",reasoning;
     "provider",`Assoc ["require_parameters",`Bool true;"data_collection",`String "deny"]] in
   call t ~output_tokens:output ~path:"/chat/completions" body >|= function
   | Error error->Error error
@@ -89,7 +89,7 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
     else system, `Assoc ["type", `String "json_schema";"json_schema",`Assoc [
       "name",`String name;"strict",`Bool true;"schema",schema]] in
   let body = `Assoc [
-    "model", `String t.config.model; "stream", `Bool false; "temperature", `Float 0.1;
+    "model", `String t.config.model; "stream", `Bool false;
     "max_tokens", `Int max_tokens; "reasoning", reasoning;
     "provider", `Assoc ["require_parameters", `Bool true; "data_collection", `String "deny"];
     "messages", `List [
@@ -169,10 +169,15 @@ When merging drafts, preserve their original citations and do not create new fac
       | _ -> Error Bad_response)
 
 let embed t ?(query=false) inputs =
-  let prefix=if query then "Query: " else "Document: " in
+  let local=Config.local_embeddings t.config in
+  let prefix=if local then (if query then "Query: " else "Document: ") else "" in
   let body = `Assoc ["model",`String t.config.embedding_model;
     "input",strings (List.map (fun text->prefix ^ text) inputs); "encoding_format",`String "float"] in
-  let request=if String.length (Json_util.to_string body)>t.config.max_input_bytes then
+  let request=if not local then
+    let fields=Json_util.object_ body in
+    call t ~output_tokens:0 ~path:"/embeddings"
+      (`Assoc (fields @ ["provider",`Assoc ["data_collection",`String "deny"]]))
+    else if String.length (Json_util.to_string body)>t.config.max_input_bytes then
     Lwt.return (Error Input_too_large)
     else Net.json ~body ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.embedding_url "/embeddings")
       >|= Result.map_error (fun error->Network error) in

@@ -12,6 +12,12 @@ let () =
   let event = Iris_event.normalize ~source:"fixture:1" ~bot_id:"bot" (Yojson.Safe.from_string payload) |> Result.get_ok in
   check "large native IDs preserve integer precision" (event.native_id=Some "9007199254740993" && event.reply_to=Some "9007199254740992");
   check "mention metadata parsed" (event.mentions=["bot"]);
+  let root=Yojson.Safe.from_string payload in
+  let raw=Json_util.required "json" root |> Json_util.object_ in
+  let no_attachment=`Assoc ["json",`Assoc (("attachment",`String "null")::List.remove_assoc "attachment" raw)] in
+  let no_attachment=Iris_event.normalize ~source:"fixture:1" ~bot_id:"bot" no_attachment in
+  check "JSON null attachment is an ordinary message without metadata"
+    (match no_attachment with Ok m->m.reply_to=None && m.mentions=[] | Error _->false);
   check "malformed source ID rejected" (Result.is_error (Iris_event.normalize ~source:"x" ~bot_id:"bot" (`Assoc ["json", `Assoc []])));
   check "duplicate JSON fields rejected" (Result.is_error (Config.of_json (`Assoc ["port",`Int 8000; "port",`Int 9000])));
   check "remote plaintext LLM endpoint rejected" (Result.is_error (Config.of_json (`Assoc ["openrouter_url", `String "http://example.com/api"])));
@@ -58,6 +64,62 @@ let () =
     check "follow-up evidence cannot cross rooms" (Store.reference_messages refs {range with room_id="b"} reference=[]);
     ignore(Store.put_message refs ~is_command:false {original with deleted=true});
     check "follow-up cannot restore deleted evidence" (Store.reference_messages refs range reference=[]));
+  let selective=Store.open_ ":memory:" in
+  Fun.protect ~finally:(fun ()->Store.close selective) (fun () ->
+    let used=message 10L "actual evidence" and unrelated=message 1L "unrelated" in
+    let request={(message 20L "question") with mentions=["bot"];sender_name="Alice"} in
+    List.iter (fun m->ignore(Store.put_message selective ~is_command:false m)) [used;unrelated];
+    ignore(Store.put_message selective ~is_command:true request);
+    let config={Config.default with source_id="fixture:1";rooms=["a"];bot_id="bot";dry_run=false} in
+    ignore(Store.enqueue selective ~now:10020. ~config {message=request;trigger=Mention;prompt="question"});
+    let job=Option.get(Store.claim_job selective ~now:10020.) in
+    let version=Store.room_version selective ~source:used.source ~room:used.room_id in
+    ignore(Store.put_message selective ~is_command:false {unrelated with text="changed unrelated text"});
+    Store.put_embedding ~snapshot:[used] selective ~source:used.source ~room:used.room_id ~key:"only-used"
+      ~model:"embedding" ~content:used.text ~at:10020. ~version [|1.;0.|];
+    check "unrelated changes do not reject in-flight embeddings"
+      (Option.is_some(Store.get_embedding selective ~source:used.source ~room:used.room_id ~key:"only-used" ~model:"embedding" ~content:used.text));
+    let evidence=Some (`Assoc ["selected_ids",`List [`String "10"];"input_ids",`List [`String "10";`String "20"]]) in
+    Store.finish_job ~snapshot:[used;request] selective job ~body:"answer" ~dry_run:false ~snapshot_version:(Some version) ~evidence;
+    ignore(Store.put_message selective ~is_command:false {used with sender_name="new nickname";mentions=["someone"]});
+    ignore(Store.purge selective ~before:10005.);
+    check "nickname changes and unrelated expiry preserve pending answers"
+      ((List.hd(Store.recent_outbox selective)).body="answer");
+    let changed={used with text="edited evidence"} in
+    ignore(Store.put_message selective ~is_command:false changed);
+    check "only dependent embedding is invalidated"
+      (Store.get_embedding selective ~source:used.source ~room:used.room_id ~key:"only-used" ~model:"embedding" ~content:used.text=None);
+    check "changed evidence requeues an unsent answer" (Store.recent_outbox selective=[] && Option.is_some(Store.claim_job selective ~now:10021.));
+    check "used source edits still reject stale results"
+      (try Store.ensure_snapshot selective [used];false with Store.Stale_snapshot->true);
+    Store.exec selective "UPDATE jobs SET attempts=3,state='queued',available_at=0";
+    let exhausted=Option.get(Store.claim_job selective ~now:10022.) in
+    let engine=Engine.create config selective in
+    Hashtbl.replace engine.name_refresh "a" (Unix.gettimeofday ());
+    Lwt_main.run(Engine.process_job engine exhausted);
+    check "exhausted source retries produce a user-visible notice"
+      (List.exists (fun (o:Store.outgoing)->o.state="pending" && o.body<>"") (Store.recent_outbox selective)));
+  let names=Store.open_ ":memory:" in
+  Fun.protect ~finally:(fun ()->Store.close names) (fun () ->
+    let observe room user_id name at current=Store.observe_name names ~source:"fixture:1" ~room ~user_id ~name ~at ~current in
+    observe "a" "alice" "옛이름" 1. true;
+    observe "a" "alice" "새이름" 2. true;
+    observe "a" "alice" "옛이름" 3. false;
+    observe "b" "alice" "다른방이름" 4. true;
+    observe "a" "bob" "새이름" 5. true;
+    check "current name survives a historical name observation"
+      (Store.speaker_name names ~source:"fixture:1" ~room:"a" ~user_id:"alice"=Some "새이름");
+    let range={source="fixture:1";room_id="a";lower=At_time 0.;before_seq=100L;through_time=20000.;retention_start=0.;note=None} in
+    check "old nicknames resolve to the same user"
+      (List.map (fun (id,_,_)->id) (Conversation.participants names range "옛이름")=["alice"]);
+    check "identical nicknames retain separate identities" (List.length(Conversation.participants names range "새이름")=2);
+    check "participant lookup is room scoped" (Conversation.participants names range "다른방이름"=[]);
+    let enriched=Store.with_speaker_names names ~source:"fixture:1" ~room:"a" [message 10L "검색할 내용"] in
+    check "names reach embedding text before search" (Retrieval.contains (Retrieval.chunk_content enriched) "새이름");
+    let args=`Assoc ["speaker_id",`String "bob"] in
+    check "speaker filter selects identities rather than matching nicknames"
+      (Conversation.filter (enriched@[message ~sender_id:"bob" 11L "다른 발언"]) args
+       |> List.map (fun (m:message)->m.sender_id) = ["bob"]));
   let path = Filename.temp_file "asko-test" ".sqlite" in
   let backup=path^".backup" in
   let cleanup () = List.iter (fun p -> try Sys.remove p with Sys_error _ -> ())

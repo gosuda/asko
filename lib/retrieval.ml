@@ -65,6 +65,10 @@ let expand messages selected =
 
 let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
   let messages=List.filter (in_range range) messages in
+  let originals=Hashtbl.create (List.length messages) in
+  List.iter (fun (m:message)->Hashtbl.replace originals m.seq m) messages;
+  let snapshot chunk=chunk.members |> List.map (fun (m:message)->m.seq)
+    |> List.sort_uniq Int64.compare |> List.filter_map (Hashtbl.find_opt originals) in
   let candidates=chunks messages in
   if candidates=[] then Lwt.return (Ok {messages=[];note=None}) else
   let lexical_fallback error =
@@ -90,7 +94,7 @@ let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
       let rec fill pending = match pending with
         | [] -> Lwt.return (Ok ())
         | _ ->
-            let batch=take 1 pending in
+            let batch=take (if Config.local_embeddings config then 1 else 32) pending in
             let rest=List.filter (fun index -> not (List.mem index batch)) pending in
             Llm.embed llm (List.map (fun index -> values.(index).content) batch) >>= function
             | Error error -> Lwt.return (Error error)
@@ -100,9 +104,11 @@ let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
                 else begin
                   List.iter2 (fun index vector ->
                     let chunk=values.(index) in
-                    Store.put_embedding store ~source:range.source ~room:range.room_id ~key:(key chunk)
-                      ~model:config.embedding_model ~content:chunk.content ~at:(Unix.gettimeofday ()) ~version vector;
-                    vectors.(index)<-Some vector) batch embedded;
+                    (try
+                       Store.put_embedding ~snapshot:(snapshot chunk) store ~source:range.source ~room:range.room_id ~key:(key chunk)
+                         ~model:config.embedding_model ~content:chunk.content ~at:(Unix.gettimeofday ()) ~version vector;
+                       vectors.(index)<-Some vector
+                     with Store.Stale_snapshot -> vectors.(index)<-None)) batch embedded;
                   fill rest
                 end
       in
@@ -113,7 +119,8 @@ let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
               let semantic=Option.bind vectors.(index) (cosine query_vector) |> Option.value ~default:(-1.) in
               let exact=lexical topic chunk.content in
               semantic,exact,0.8*.semantic+.0.2*.exact,chunk) values) in
-            let hits=scored |> List.filter (fun (semantic,exact,_,_) -> semantic>=0.25 || exact>0.)
+            let hits=scored |> List.filter (fun (semantic,exact,_,chunk) ->
+                Store.snapshot_current store (snapshot chunk) && (semantic>=0.25 || exact>0.))
               |> List.sort (fun (_,_,a,_) (_,_,b,_) -> Float.compare b a) |> take 6 in
             Ok {messages=expand messages (List.concat_map (fun (_,_,_,chunk) -> chunk.members) hits);note=None})
   | Ok _ -> Lwt.return (Error Llm.Bad_response)
