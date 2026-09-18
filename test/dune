@@ -22,3 +22,8 @@
  (name test_pipeline)
  (modules test_pipeline)
  (libraries asko unix yojson sqlite3 lwt.unix cohttp-lwt-unix))
+
+(test
+ (name test_web_fetch)
+ (modules test_web_fetch)
+ (libraries asko lwt.unix cohttp-lwt-unix ipaddr))

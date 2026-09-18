@@ -8,6 +8,8 @@ Ingestion commits the message and its queued job in one transaction. Backfill re
 
 Each turn starts with recent messages, reply context, and the previous response. `read_messages`, `search_messages`, and `get_message` expose original records; `respond` returns free-form text with optional source IDs. There is no intent classifier or summary-only rejection. Dates use RFC3339 tool arguments. The loop allows eight model turns within the existing token and time budgets. Valid citation IDs establish source membership, not whether every generated claim follows from the evidence.
 
+`fetch_url` reads public HTTP(S) links and returns a title, text, final URL, and truncation flag. It supports UTF-8 HTML, plain text, and JSON without running JavaScript. Each fetch allows 10 seconds, 2 MiB of downloaded content, 20,000 characters of text, and five redirects. Every destination's resolved addresses must be public; the connection uses a checked IP directly while retaining the hostname for HTTP and TLS. Loopback, private, link-local, and Tailscale addresses are blocked, including through redirects. Web content is treated as reference material, and answers using it should include the source URL.
+
 `daily_budget_tokens` reserves request UTF-8 bytes plus the output allowance before each OpenRouter call. Failed calls count too. This conservative limit is not a billing total. Retention, request expiry, cooldowns, and retry limits bound stored data and work.
 
 ## Validation record
