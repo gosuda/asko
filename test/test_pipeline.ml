@@ -77,7 +77,7 @@ let () =
       | "/query" ->
           let sql=field "query" json |> Json_util.string in
           let bindings=field "bind" json |> Json_util.list Fun.id in
-          if Retrieval.contains sql "FROM db2." then response (`Assoc ["data",`List [`Assoc ["name",`String "앨리스";"enc",`Int 0]]])
+          if Retrieval.contains sql "FROM db2." then response (`Assoc ["data",`List [`Assoc ["user_id",`String "2001";"name",`String "앨리스";"enc",`Int 0]]])
           else if !fail_second_page && List.length bindings=5 && List.nth bindings 1=`String "200" then
             Cohttp_lwt_unix.Server.respond_string ~status:`Service_unavailable ~body:"{}" ()
           else response (`Assoc ["data",`List (raw_query fixture sql bindings)])

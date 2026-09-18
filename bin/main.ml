@@ -53,6 +53,18 @@ let () =
               "expires_in_seconds",`Int(int_of_float(Sqlite3.column_double s 4-.now));
               "job_error",optional 5;"delivery_state",optional 6;"delivery_error",optional 7]) in
           print_endline(Json_util.to_string (`List rows)))
+    | "sync-names" ->
+        let config=configuration !config_path in
+        with_store config (fun store -> Lwt_main.run (
+          let open Lwt.Infix in
+          Lwt_list.iter_s (fun room -> Iris.room_names (Iris.create config) room >|= function
+            | Error error -> die ("Nickname sync failed: " ^ Net.error_name error)
+            | Ok names ->
+                Store.transaction store (fun () -> List.iter (fun (user_id,name) ->
+                  Store.observe_name store ~source:config.source_id ~room ~user_id ~name
+                    ~at:(Unix.gettimeofday ()) ~current:true) names);
+                print_endline(Json_util.to_string (`Assoc ["room_id",`String room;"profiles",`Int(List.length names)]))
+            ) config.rooms))
     | "outbox" -> let config = configuration !config_path in
         with_store config (fun store ->
           Store.recent_outbox store |> List.map (fun (item:Store.outgoing) -> `Assoc [
@@ -129,7 +141,7 @@ let () =
          | Ok (200, body) -> Printf.printf "{\"https\":true,\"status\":200,\"bytes\":%d}\n" (String.length body)
          | Ok (status, _) -> die ("HTTPS probe status " ^ string_of_int status)
          | Error error -> die ("HTTPS probe failed: " ^ Net.error_name error))
-    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | diagnose-recovery | diagnose-jobs | backup --output path | probe-https | version [--config path]"
+    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backup --output path | probe-https | version [--config path]"
   with
   | Store.Error error -> die ("database error: " ^ error)
   | Sys_error _ -> die "filesystem operation failed"

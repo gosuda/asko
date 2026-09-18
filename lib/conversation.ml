@@ -23,9 +23,12 @@ let tool name description fields = `Assoc ["type",`String "function";"function",
 let tools = [
   tool "read_messages" "Read this room's stored messages chronologically. Null times mean the available history. Use next_after_id to continue a partial page."
     ["start",Llm.nullable Llm.string_schema;"end",Llm.nullable Llm.string_schema;
-     "after_id",Llm.nullable Llm.string_schema];
+     "after_id",Llm.nullable Llm.string_schema;"speaker_id",Llm.nullable Llm.string_schema];
   tool "search_messages" "Find relevant original conversation in this room using semantic and keyword search."
-    ["query",Llm.string_schema;"start",Llm.nullable Llm.string_schema;"end",Llm.nullable Llm.string_schema];
+    ["query",Llm.string_schema;"start",Llm.nullable Llm.string_schema;"end",Llm.nullable Llm.string_schema;
+     "speaker_id",Llm.nullable Llm.string_schema];
+  tool "find_participants" "Find people in this room by a current or previously observed nickname. Returns stable user IDs for speaker_id filters. An empty query lists known people."
+    ["query",Llm.string_schema];
   tool "get_message" "Read the full text of one original message in this room."
     ["id",Llm.string_schema];
   tool "respond" "Finish with a natural reply. Cite supporting original message IDs for claims about the chat. Use an empty sources array for general conversation or when no evidence exists."
@@ -35,10 +38,31 @@ let tools = [
 let filter history args =
   let start=optional_time "start" args and stop=optional_time "end" args in
   let after=optional_id "after_id" args in
+  let speaker=Json_util.optional Json_util.id (Json_util.field "speaker_id" args) in
   List.filter (fun (m:message) ->
     (match start with None->true | Some at->m.created_at>=at) &&
     (match stop with None->true | Some at->m.created_at<=at) &&
-    (match after with None->true | Some id->m.seq>id)) history
+    (match after with None->true | Some id->m.seq>id) &&
+    (match speaker with None->true | Some id->m.sender_id=id)) history
+
+let participant_json (id,name,aliases) = `Assoc ["user_id",`String id;"name",`String name;
+  "known_names",`List(List.map (fun name->`String name) (Retrieval.take 8 (name::aliases)))]
+
+let participants store range query =
+  let query=String.lowercase_ascii (String.trim query) in
+  Store.known_speakers store ~source:range.source ~room:range.room_id
+  |> List.filter (fun (id,name,aliases)->query="" || query=id ||
+      List.exists (fun name->Retrieval.contains (String.lowercase_ascii name) query) (name::aliases))
+
+let participant_page people =
+  let rec loop bytes count acc = function
+    | [] -> `Assoc ["people",`List(List.rev acc);"partial",`Bool false]
+    | person::rest ->
+        let json=participant_json person in
+        let next=bytes+String.length(Json_util.to_string json) in
+        if count>=100 || next>18000 then `Assoc ["people",`List(List.rev acc);"partial",`Bool true]
+        else loop next (count+1) (json::acc) rest in
+  loop 0 0 [] people
 
 let context ?(full=false) (m:message) =
   let text=if full then m.text else Utf8.take 8000 m.text in
@@ -73,6 +97,11 @@ let run ~config ~store ~llm ~name_messages ~request ~anchor ~reference ~history 
 naturally in Korean to the user's request. Use the conversation, their reply, and
 the earlier answer as context. You can summarize, explain, reason, or simply talk;
 there is no menu of supported question types and no required command wording.
+People are identified by user_id, not by nickname. The room's known_people list
+links current names and previously observed names to those IDs. Use current names
+in replies; use find_participants and speaker_id filters when looking up a person.
+Different IDs can share a nickname. Don't merge people just because names match,
+and don't guess nickname history that is absent from known_names.
 Use the read/search tools when more evidence would help. The initial messages may
 already contain enough information, in which case answer directly. For a request
 covering all available history, read remaining pages if context_is_partial is true.
@@ -97,6 +126,8 @@ context and request already make the intended coverage clear.|} in
     "request_time",`String(timestamp request.message.created_at);"timezone",`String "Asia/Seoul";
     "retention_start",`String(timestamp range.retention_start);
     "stored_message_count",`Int(List.length history);
+    "known_people",participant_page (participants store range "");
+    "requester_id",`String request.message.sender_id;
     "context_is_partial",`Bool(partial || List.length initial<List.length history);
     "messages",`List(List.map context initial);
     "reply",Json_util.option (fun (m:message)->`Assoc ["is_bot",`Bool m.is_bot;"message",context m]) anchor;
@@ -111,6 +142,10 @@ context and request already make the intended coverage clear.|} in
         | m::_->`String(Int64.to_string m.seq) | []->`Null else `Null)] in
   let execute name args =
     match name with
+    | "find_participants" ->
+        let query=Json_util.required "query" args |> Json_util.string in
+        if String.length query>1024 then Json_util.invalid "Name query too long";
+        Lwt.return (Ok (participant_page (participants store range query)))
     | "read_messages" ->
         let selected,partial=filter history args |> page ~bytes:45000 ~limit:100 in
         output selected partial >|= fun json->Ok json

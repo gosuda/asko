@@ -14,6 +14,8 @@ let apply ~config ~store ~now ~live (message : message) =
       | _ -> message in
     let invocation = Trigger.detect ~bot_id:config.bot_id message in
     Store.transaction store (fun () ->
+      if not message.is_bot then Store.observe_name store ~source:message.source ~room:message.room_id ~user_id:message.sender_id
+        ~name:message.sender_name ~at:(if live then now else message.created_at) ~current:live;
       let stored_message = if message.is_bot then {message with text=""} else message in
       let inserted = Store.put_message store ~is_command:(invocation <> None) stored_message in
       Store.confirm_message store message;

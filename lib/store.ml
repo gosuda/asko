@@ -94,7 +94,7 @@ let open_ path =
      exec t "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL";
      (match count t "PRAGMA user_version" [] with
       | 0 -> transaction t (fun () -> exec t schema)
-      | 1 | 2 | 3 | 4 -> ()
+      | 1 | 2 | 3 | 4 | 5 -> ()
       | _ -> raise (Error "database schema is newer than this program"));
      if count t "PRAGMA user_version" [] = 1 then
        transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN snapshot_version INTEGER; PRAGMA user_version=2");
@@ -102,6 +102,19 @@ let open_ path =
        transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN evidence TEXT; PRAGMA user_version=3");
      if count t "PRAGMA user_version" [] = 3 then
        transaction t (fun () -> exec t "ALTER TABLE embeddings ADD COLUMN dependencies TEXT; PRAGMA user_version=4");
+     if count t "PRAGMA user_version" [] = 4 then
+       transaction t (fun () -> exec t {|
+         CREATE TABLE speaker_names (
+           source TEXT NOT NULL, room_id TEXT NOT NULL, user_id TEXT NOT NULL,
+           name TEXT NOT NULL, observed_at REAL NOT NULL, is_current INTEGER NOT NULL DEFAULT 0,
+           PRIMARY KEY(source,room_id,user_id,name));
+         CREATE UNIQUE INDEX speaker_current ON speaker_names(source,room_id,user_id) WHERE is_current=1;
+         INSERT INTO speaker_names(source,room_id,user_id,name,observed_at)
+           SELECT source,room_id,sender_id,sender_name,MAX(created_at) FROM messages
+           WHERE sender_name<>sender_id AND sender_name<>'' AND deleted=0 AND is_bot=0
+           GROUP BY source,room_id,sender_id,sender_name;
+         PRAGMA user_version=5;
+       |});
      exec t "CREATE INDEX IF NOT EXISTS messages_retention ON messages(created_at)";
      t
    with exn -> ignore (Sqlite3.db_close t.db); raise exn)
@@ -109,6 +122,41 @@ let close t = ignore (Sqlite3.db_close t.db)
 let optional_text stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_text stmt col)
 let optional_int64 stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_int64 stmt col)
 let optional_float stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_double stmt col)
+
+let observe_name t ~source ~room ~user_id ~name ~at ~current =
+  let name=String.trim name in
+  if name<>"" && name<>user_id && String.is_valid_utf_8 name then begin
+    let name=Utf8.take 512 name in
+    if current then run t "UPDATE speaker_names SET is_current=0 WHERE source=? AND room_id=? AND user_id=?"
+      [text source;text room;text user_id];
+    run t {|INSERT INTO speaker_names VALUES(?,?,?,?,?,?)
+      ON CONFLICT(source,room_id,user_id,name) DO UPDATE SET
+      observed_at=MAX(observed_at,excluded.observed_at),is_current=MAX(is_current,excluded.is_current)|}
+      [text source;text room;text user_id;text name;real at;boolean current]
+  end
+
+let known_speakers t ~source ~room =
+  let values=rows t {|SELECT user_id,name FROM speaker_names WHERE source=? AND room_id=?
+    ORDER BY user_id,is_current DESC,observed_at DESC,name|} [text source;text room]
+    (fun s->Sqlite3.column_text s 0,Sqlite3.column_text s 1) in
+  let rec group acc = function
+    | [] -> List.rev acc
+    | (id,name)::rest ->
+        let same,rest=List.partition (fun (other,_)->other=id) rest in
+        group ((id,name,List.map snd same)::acc) rest in
+  group [] values
+
+let speaker_name t ~source ~room ~user_id =
+  one t {|SELECT name FROM speaker_names WHERE source=? AND room_id=? AND user_id=?
+    ORDER BY is_current DESC,observed_at DESC LIMIT 1|}
+    [text source;text room;text user_id] (fun s->Sqlite3.column_text s 0)
+
+let with_speaker_names t ~source ~room messages =
+  let names=Hashtbl.create 64 in
+  List.iter (fun (id,name,_)->Hashtbl.replace names id name) (known_speakers t ~source ~room);
+  List.map (fun (m:message) ->
+    if m.source<>source || m.room_id<>room then m else
+    match Hashtbl.find_opt names m.sender_id with Some sender_name->{m with sender_name} | None->m) messages
 let message_columns = "source,seq,native_id,room_id,sender_id,sender_name,created_at,text,reply_to,mentions,is_bot,deleted"
 let message_row stmt : message = {
   source=Sqlite3.column_text stmt 0; seq=Sqlite3.column_int64 stmt 1;
@@ -427,6 +475,10 @@ let purge t ~before = transaction t (fun () ->
   List.iter (fun (source, room) ->
     run t "UPDATE rooms SET version=version+1 WHERE source=? AND room_id=?" [text source; text room]) changed;
   run t "DELETE FROM messages WHERE created_at<?" [real before];
+  run t "DELETE FROM speaker_names WHERE observed_at<? AND is_current=0" [real before];
+  exec t {|DELETE FROM speaker_names WHERE NOT EXISTS (
+    SELECT 1 FROM messages m WHERE m.source=speaker_names.source AND m.room_id=speaker_names.room_id
+    AND m.sender_id=speaker_names.user_id AND m.deleted=0)|};
   run t "DELETE FROM embeddings WHERE created_at<?" [real before];
   List.length changed)
 

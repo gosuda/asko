@@ -145,3 +145,9 @@ make test-android SSH_TARGET=asko-phone
 ```
 
 This runs native ARM64 tests with mock Iris/OpenRouter servers and a public HTTPS request to OpenRouter's model list. It sends no KakaoTalk messages and makes no paid calls. Test servers exit; binaries remain in `~/asko-runtime-test`. See [validation notes](implementation.md) for what has actually been run.
+
+## Nicknames
+
+Run `./run-phone.sh sync-names` to refresh the enabled rooms immediately. It prints counts, not names.
+
+The backend refreshes room-specific OpenChat profiles when needed, at most once per minute. It also observes names in live events. Current and previously observed names map to a stable user ID within each room; old names from before collection are available only if present in stored messages. `find_participants` resolves a name to IDs, and history tools accept a `speaker_id` filter. Profile updates do not invalidate message snapshots.

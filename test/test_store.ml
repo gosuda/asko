@@ -94,9 +94,32 @@ let () =
       (try Store.ensure_snapshot selective [used];false with Store.Stale_snapshot->true);
     Store.exec selective "UPDATE jobs SET attempts=3,state='queued',available_at=0";
     let exhausted=Option.get(Store.claim_job selective ~now:10022.) in
-    Lwt_main.run(Engine.process_job (Engine.create config selective) exhausted);
+    let engine=Engine.create config selective in
+    Hashtbl.replace engine.name_refresh "a" (Unix.gettimeofday ());
+    Lwt_main.run(Engine.process_job engine exhausted);
     check "exhausted source retries produce a user-visible notice"
       (List.exists (fun (o:Store.outgoing)->o.state="pending" && o.body<>"") (Store.recent_outbox selective)));
+  let names=Store.open_ ":memory:" in
+  Fun.protect ~finally:(fun ()->Store.close names) (fun () ->
+    let observe room user_id name at current=Store.observe_name names ~source:"fixture:1" ~room ~user_id ~name ~at ~current in
+    observe "a" "alice" "옛이름" 1. true;
+    observe "a" "alice" "새이름" 2. true;
+    observe "a" "alice" "옛이름" 3. false;
+    observe "b" "alice" "다른방이름" 4. true;
+    observe "a" "bob" "새이름" 5. true;
+    check "current name survives a historical name observation"
+      (Store.speaker_name names ~source:"fixture:1" ~room:"a" ~user_id:"alice"=Some "새이름");
+    let range={source="fixture:1";room_id="a";lower=At_time 0.;before_seq=100L;through_time=20000.;retention_start=0.;note=None} in
+    check "old nicknames resolve to the same user"
+      (List.map (fun (id,_,_)->id) (Conversation.participants names range "옛이름")=["alice"]);
+    check "identical nicknames retain separate identities" (List.length(Conversation.participants names range "새이름")=2);
+    check "participant lookup is room scoped" (Conversation.participants names range "다른방이름"=[]);
+    let enriched=Store.with_speaker_names names ~source:"fixture:1" ~room:"a" [message 10L "검색할 내용"] in
+    check "names reach embedding text before search" (Retrieval.contains (Retrieval.chunk_content enriched) "새이름");
+    let args=`Assoc ["speaker_id",`String "bob"] in
+    check "speaker filter selects identities rather than matching nicknames"
+      (Conversation.filter (enriched@[message ~sender_id:"bob" 11L "다른 발언"]) args
+       |> List.map (fun (m:message)->m.sender_id) = ["bob"]));
   let path = Filename.temp_file "asko-test" ".sqlite" in
   let backup=path^".backup" in
   let cleanup () = List.iter (fun p -> try Sys.remove p with Sys_error _ -> ())
