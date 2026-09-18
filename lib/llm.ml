@@ -198,11 +198,15 @@ let answer_schema = object_schema [
   "answer",string_schema;
   "sources",`Assoc ["type",`String "array";"maxItems",`Int 8;"items",string_schema]]
 
-let decode_answer ~messages json = Json_util.protect (fun () ->
+(* Leave room for the requester label and evidence timestamps in the sent reply. *)
+let answer_limit config =
+  config.Config.max_response_bytes - min 1000 (config.max_response_bytes / 4)
+
+let decode_answer ~max_bytes ~messages json = Json_util.protect (fun () ->
   let open Json_util in
   reject_extra ["answer";"sources"] json;
   let answer_text=required "answer" json |> string |> String.trim in
-  if answer_text="" || String.length answer_text>6000 || not(String.is_valid_utf_8 answer_text)
+  if answer_text="" || String.length answer_text>max_bytes || not(String.is_valid_utf_8 answer_text)
      || String.contains answer_text '\000' then invalid "invalid answer";
   let ids=List.map (fun (m:message)->m.seq) messages in
   let answer_sources=required "sources" json |> list (fun value ->
