@@ -104,7 +104,7 @@ Start with dry-run and inspect `./run-phone.sh outbox`. Set `dry_run=false` when
 
 ## Embeddings
 
-The default is `openai/text-embedding-3-small` at `https://openrouter.ai/api/v1`. It uses the same OpenRouter key as the chat model and sends up to 32 conversation chunks per request.
+The default is `openai/text-embedding-3-small` at `https://openrouter.ai/api/v1`. It uses the same OpenRouter key as the chat model and sends up to 32 conversation chunks per request. Replies include a plain-text `@nickname` prefix for the requester; this does not create a KakaoTalk mention notification.
 
 ### Optional local Jina
 

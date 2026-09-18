@@ -14,6 +14,12 @@ let recover t ?through room = Lwt_mutex.with_lock t.recovery_lock (fun () ->
   Recovery.room ~config:t.config ~store:t.store ~iris:t.iris ?through room)
 
 let finish t job ?snapshot_version ?evidence body =
+  let sender=job.Store.invocation.message in
+  (if sender.sender_name=sender.sender_id then
+     Iris.sender_name t.iris sender.sender_id >|= Option.value ~default:sender.sender_name
+   else Lwt.return sender.sender_name) >>= fun name ->
+  let prefix="@" ^ Trigger.normalize name ^ "\n" in
+  let body=prefix ^ Utf8.take (max 0 (t.config.max_response_bytes-String.length prefix)) body in
   Store.finish_job t.store job ~body ~dry_run:t.config.dry_run ~snapshot_version ~evidence;
   Lwt.return_unit
 
