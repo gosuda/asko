@@ -12,6 +12,8 @@ Each turn starts with recent messages, reply context, and the previous response.
 
 `daily_budget_tokens` reserves request UTF-8 bytes plus the output allowance before each OpenRouter call. Failed calls count too. This conservative limit is not a billing total. Retention, request expiry, cooldowns, and retry limits bound stored data and work.
 
+Reply length follows the request: simple answers can be short, while explanations and timelines can use multiple paragraphs. The default output allowance is 4,000 tokens plus the reasoning budget. Sent replies allow 12,000 UTF-8 bytes, with space reserved for the requester label and evidence timestamps. Answer validation and follow-up context use this configured limit.
+
 ## Validation record
 
 PC and Galaxy SM-F711N (Android 15) runs covered the domain, SQLite, HTTP, summaries, and mock pipeline. Checks included all invocation paths, more than 200 recovered messages, cursor recovery after a failed page, room isolation, embedding reuse, deletion reconciliation, dry-run protection, and delivery confirmation races.

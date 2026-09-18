@@ -8,11 +8,23 @@ let message ?(room="a") ?reply_to seq text = {
 }
 let json = Yojson.Safe.from_string
 let () =
+  let max_bytes=Llm.answer_limit Config.default in
   let messages=[message 1L "postgres를 검토했어"; message 2L "아직 결정 안 했어"] in
-  let answer=Llm.decode_answer ~messages (json {|{"answer":"앨리스님이 postgres를 검토하자고 했어요.","sources":["1"]}|}) in
+  let answer=Llm.decode_answer ~max_bytes ~messages (json {|{"answer":"앨리스님이 postgres를 검토하자고 했어요.","sources":["1"]}|}) in
   check "grounded conversational answer accepted" (Result.is_ok answer);
   check "answer cannot cite an invented message"
-    (Result.is_error(Llm.decode_answer ~messages (json {|{"answer":"다른 방에서 말했어요.","sources":["999"]}|})));
+    (Result.is_error(Llm.decode_answer ~max_bytes ~messages (json {|{"answer":"다른 방에서 말했어요.","sources":["999"]}|})));
+  let timeline=String.concat "\n\n" (List.init 40 (fun i -> string_of_int i ^ "시: " ^
+    String.concat " " (List.init 24 (fun _->"설명")))) in
+  let long_json=`Assoc ["answer",`String timeline;"sources",`List [`String "1"]] in
+  let long_answer=Llm.decode_answer ~max_bytes ~messages long_json in
+  check "long Korean timeline accepted beyond the old 6000-byte cap"
+    (String.length timeline>6000 && Result.is_ok long_answer);
+  let rendered_long=Summary.render_answer ~max_bytes:Config.default.max_response_bytes ~messages (Result.get_ok long_answer) in
+  check "long answer keeps all paragraphs and evidence"
+    (String.starts_with ~prefix:timeline rendered_long && Retrieval.contains rendered_long "근거:");
+  check "smaller configured answer limit is respected"
+    (Result.is_error(Llm.decode_answer ~max_bytes:6000 ~messages long_json));
   let rendered_answer=Summary.render_answer ~max_bytes:7000 ~messages (Result.get_ok answer) in
   check "answer is direct rather than a forced summary"
     (String.starts_with ~prefix:"앨리스님" rendered_answer && not(Retrieval.contains rendered_answer "확인된 대화"));
