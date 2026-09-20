@@ -21,8 +21,8 @@ let () =
   check "long Korean timeline accepted beyond the old 6000-byte cap"
     (String.length timeline>6000 && Result.is_ok long_answer);
   let rendered_long=Summary.render_answer ~max_bytes:Config.default.max_response_bytes ~messages (Result.get_ok long_answer) in
-  check "long answer keeps all paragraphs and evidence"
-    (String.starts_with ~prefix:timeline rendered_long && Retrieval.contains rendered_long "근거:");
+  check "long answer keeps all paragraphs without citation footers"
+    (String.starts_with ~prefix:timeline rendered_long && not(Retrieval.contains rendered_long "근거:"));
   check "smaller configured answer limit is respected"
     (Result.is_error(Llm.decode_answer ~max_bytes:6000 ~messages long_json));
   let rendered_answer=Summary.render_answer ~max_bytes:7000 ~messages (Result.get_ok answer) in
