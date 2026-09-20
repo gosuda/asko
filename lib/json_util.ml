@@ -41,3 +41,12 @@ let protect f =
   | Failure _ | Invalid_argument _ -> Error "invalid value"
 let to_string = Yojson.Safe.to_string
 let option encode = function None -> `Null | Some value -> encode value
+
+let model_json text =
+  let text=String.trim text in
+  let text=if (String.starts_with ~prefix:"```json\n" text || String.starts_with ~prefix:"```\n" text)
+      && String.ends_with ~suffix:"```" text then
+    let first=String.index text '\n'+1 in
+    String.sub text first (String.length text-first-3) |> String.trim
+    else text in
+  Yojson.Safe.from_string text

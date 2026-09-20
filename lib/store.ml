@@ -375,26 +375,32 @@ let outgoing_row stmt = {
 }
 let outgoing_columns = "id,job_id,source,room_id,body,state,floor_seq,attempted_at,snapshot_version,evidence"
 
+type answer_reference = { question : message; body : string; evidence : string option }
+
 let answer_reference t (request:message) (anchor:message option) =
-  let result s=Sqlite3.column_text s 0,optional_text s 1 in
+  let result s =
+    let question=get_message t ~source:request.source ~seq:(Sqlite3.column_int64 s 2) |> Option.get in
+    {question;body=Sqlite3.column_text s 0;evidence=optional_text s 1} in
   match anchor with
   | Some m when m.is_bot && m.text<>"" && is_before m request ->
-      one t {|SELECT o.body,o.evidence FROM outbox o JOIN jobs j ON j.id=o.job_id
+      one t {|SELECT o.body,o.evidence,j.request_seq FROM outbox o JOIN jobs j ON j.id=o.job_id
         WHERE o.source=? AND o.room_id=? AND o.body=? AND o.state='sent'
         AND o.floor_seq<? AND j.request_seq<? ORDER BY o.floor_seq DESC LIMIT 1|}
         [text request.source;text request.room_id;text m.text;integer m.seq;integer m.seq] result
   | Some _ -> None
   | None when request.reply_to=None ->
-      one t {|SELECT o.body,o.evidence FROM outbox o JOIN jobs j ON j.id=o.job_id
+      one t {|SELECT o.body,o.evidence,j.request_seq FROM outbox o JOIN jobs j ON j.id=o.job_id
         JOIN messages m ON m.source=j.source AND m.seq=j.request_seq
         WHERE o.source=? AND o.room_id=? AND m.sender_id=? AND j.request_seq<?
-        AND m.created_at<=? AND o.state='sent' AND o.body<>'' ORDER BY j.request_seq DESC LIMIT 1|}
-        [text request.source;text request.room_id;text request.sender_id;integer request.seq;real request.created_at] result
+        AND m.created_at<=? AND m.created_at>=? AND o.attempted_at<=?
+        AND o.state='sent' AND o.body<>'' ORDER BY j.request_seq DESC LIMIT 1|}
+        [text request.source;text request.room_id;text request.sender_id;integer request.seq;
+         real request.created_at;real(request.created_at-.1800.);real request.created_at] result
   | None -> None
 
 let reference_messages t range reference =
   match reference with
-  | Some (_,Some evidence) ->
+  | Some {evidence=Some evidence;_} ->
       (match Json_util.protect (fun () -> Yojson.Safe.from_string evidence
         |> Json_util.required "selected_ids" |> Json_util.list (fun value ->
           match Int64.of_string_opt (Json_util.id value) with Some id->id | None->Json_util.invalid "invalid source ID")) with
@@ -414,6 +420,11 @@ let begin_send t outgoing ~floor_seq ~now =
     [integer floor_seq; real now; integer outgoing.id];
   Sqlite3.changes t.db = 1
 
+let log_delivery_confirmed outgoing =
+  Telemetry.emit "delivery_confirmed" ["job_id",`String(Int64.to_string outgoing.job_id);
+    "outbox_id",`String(Int64.to_string outgoing.id);"room_id",`String outgoing.room_id;
+    "since_send_ms",(match outgoing.attempted_at with None->`Null | Some at->Telemetry.ms(Unix.gettimeofday ()-.at))]
+
 let outgoing_state t outgoing ~state ?error () = transaction t (fun () ->
   run t "UPDATE outbox SET state=?,error=? WHERE id=? AND state NOT IN ('sent','failed','expired','dry_run','cancelled')"
     [text state; opt_text error; integer outgoing.id];
@@ -424,7 +435,8 @@ let outgoing_state t outgoing ~state ?error () = transaction t (fun () ->
     | "failed" -> "failed"
     | _ -> "awaiting_send" in
   if changed then run t "UPDATE jobs SET state=?,last_error=? WHERE id=?"
-      [text job_state; opt_text error; integer outgoing.job_id])
+      [text job_state; opt_text error; integer outgoing.job_id];
+  if changed && state="sent" then log_delivery_confirmed outgoing)
 
 let confirm_message t (message : message) =
   if message.is_bot then
@@ -434,7 +446,8 @@ let confirm_message t (message : message) =
     | [outgoing] ->
         (* Called from ingestion's transaction; do not open a nested transaction. *)
         run t "UPDATE outbox SET state='sent',error=NULL WHERE id=?" [integer outgoing.id];
-        run t "UPDATE jobs SET state='completed',last_error=NULL WHERE id=?" [integer outgoing.job_id]
+        run t "UPDATE jobs SET state='completed',last_error=NULL WHERE id=?" [integer outgoing.job_id];
+        log_delivery_confirmed outgoing
     | _ -> ()
 
 let get_embedding t ~source ~room ~key ~model ~content =

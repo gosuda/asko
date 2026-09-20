@@ -61,19 +61,27 @@ let call t ~output_tokens ~path body =
         (* Conservative reservation, including unsuccessful/ambiguous requests.
            It is a safety budget, not an invoice or an exact tokenizer count. *)
         Store.record_tokens t.store ~at:now reservation;
-        Net.json ~headers:["authorization","Bearer " ^ key] ~body
-          ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.openrouter_url path)
-        >|= function
-        | Error error -> Error (Network error)
-        | Ok json ->
-            let actual = match Json_util.protect (fun () ->
-              Json_util.required "usage" json |> Json_util.required "total_tokens" |> Json_util.int) with
-              | Ok value -> max 0 value | Error _ -> 0 in
-            if actual > reservation then Store.record_tokens t.store ~at:now (actual-reservation);
-            Ok json
+        let model=Json_util.required "model" body |> Json_util.string in
+        Telemetry.span ~fields:["model",`String model;"endpoint",`String path;
+          "api_kind",`String(if path="/embeddings" then "embedding" else "chat");
+          "request_bytes",`Int size;"output_limit_tokens",`Int output_tokens]
+          ~describe:(function
+            | Error error->Telemetry.result_fields error_name (Error error)
+            | Ok json->Telemetry.usage_fields json) "model_request" (fun ()->
+          Net.json ~headers:["authorization","Bearer " ^ key] ~body
+            ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.openrouter_url path)
+          >|= function
+          | Error error -> Error (Network error)
+          | Ok json ->
+              let actual = match Json_util.protect (fun () ->
+                Json_util.required "usage" json |> Json_util.required "total_tokens" |> Json_util.int) with
+                | Ok value -> max 0 value | Error _ -> 0 in
+              if actual > reservation then Store.record_tokens t.store ~at:now (actual-reservation);
+              Ok json)
       end
 
 let turn t ~messages ~tools =
+  Telemetry.result ~error:error_name "answer_generation" (fun ()->
   let output=t.config.max_output_tokens + (if t.config.reasoning_enabled then t.config.reasoning_max_tokens else 0) in
   let reasoning=if t.config.reasoning_enabled then
     `Assoc ["enabled",`Bool true;"max_tokens",`Int t.config.reasoning_max_tokens]
@@ -92,8 +100,12 @@ let turn t ~messages ~tools =
       let fields=Json_util.object_ message |> List.filter (fun (key,_)->
         List.mem key ["role";"content";"tool_calls";"reasoning";"reasoning_details";"reasoning_content"]) in
       `Assoc fields) with Ok message->Ok message | Error reason->Error (Bad_response {stage="chat_completion";reason}))
+)
 
 let chat t ~name ~schema ~system ~user ~max_tokens =
+  let stage=match name with "asko_context_plan"->"context_plan" | "asko_context_notes"->"context_notes"
+    | "asko_answer_audit"->"answer_audit" | "asko_summary"->"summary" | _->"structured_generation" in
+  Telemetry.result ~error:error_name stage (fun ()->
   let reasoning, max_tokens = if t.config.reasoning_enabled then
     `Assoc ["enabled",`Bool true;"max_tokens",`Int t.config.reasoning_max_tokens],
     max_tokens+t.config.reasoning_max_tokens
@@ -124,8 +136,9 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
         (match Json_util.field "finish_reason" choice with
          | Some (`String "length") -> Json_util.invalid "truncated completion" | _ -> ());
         Json_util.required "message" choice |> Json_util.required "content" |> Json_util.string
-        |> Yojson.Safe.from_string) with
+        |> Json_util.model_json) with
        | Ok json -> Ok json | Error reason -> Error (Bad_response {stage="structured_completion";reason}))
+)
 
 let reject_extra allowed json =
   if List.exists (fun (key,_) -> not (List.mem key allowed)) (Json_util.object_ json)
@@ -188,10 +201,17 @@ When merging drafts, preserve their original citations and do not create new fac
       | Error reason -> Error (Bad_response {stage="summary_validation";reason}))
 
 let embed t ?(query=false) inputs =
+  Telemetry.result ~error:error_name ~fields:["input_count",`Int(List.length inputs);
+    "input_bytes",`Int(List.fold_left(fun n s->n+String.length s) 0 inputs);
+    "model",`String t.config.embedding_model]
+    (if query then "embedding_query" else "embedding_documents") (fun ()->
   let local=Config.local_embeddings t.config in
   let prefix=if local then (if query then "Query: " else "Document: ") else "" in
   let body = `Assoc ["model",`String t.config.embedding_model;
     "input",strings (List.map (fun text->prefix ^ text) inputs); "encoding_format",`String "float"] in
+  let body=if not local && t.config.embedding_model="google/gemini-embedding-001" then
+    `Assoc (Json_util.object_ body @ ["dimensions",`Int 3072;
+      "input_type",`String(if query then "search_query" else "search_document")]) else body in
   let request=if not local then
     let fields=Json_util.object_ body in
     call t ~output_tokens:0 ~path:"/embeddings"
@@ -199,8 +219,9 @@ let embed t ?(query=false) inputs =
     else if String.length (Json_util.to_string body)>t.config.max_input_bytes then
     Lwt.return (Error (Limit_exceeded {resource="max_input_bytes";
       actual=Some (String.length (Json_util.to_string body));limit=t.config.max_input_bytes}))
-    else Net.json ~body ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.embedding_url "/embeddings")
-      >|= Result.map_error (fun error->Network error) in
+    else Telemetry.result ~error:error_name "local_embedding_request" (fun ()->
+      Net.json ~body ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.embedding_url "/embeddings")
+      >|= Result.map_error (fun error->Network error)) in
   request >|= function
   | Error error -> Error error
   | Ok json -> (match Json_util.protect (fun () ->
@@ -213,12 +234,13 @@ let embed t ?(query=false) inputs =
       List.mapi (fun index (actual,vector) ->
         if index<>actual then Json_util.invalid "invalid embedding index"; vector) data)
     with Ok vectors->Ok vectors | Error reason->Error (Bad_response {stage="embedding_validation";reason}))
+)
 
 let answer_schema = object_schema [
   "answer",string_schema;
-  "sources",`Assoc ["type",`String "array";"maxItems",`Int 8;"items",string_schema]]
+  "sources",`Assoc ["type",`String "array";"maxItems",`Int 64;"items",string_schema]]
 
-(* Leave room for the requester label and evidence timestamps in the sent reply. *)
+(* Leave room for the requester label. Evidence remains internal. *)
 let answer_limit config =
   config.Config.max_response_bytes - min 1000 (config.max_response_bytes / 4)
 
@@ -232,5 +254,5 @@ let decode_answer ~max_bytes ~messages json = Json_util.protect (fun () ->
   let answer_sources=required "sources" json |> list (fun value ->
     match Int64.of_string_opt (string value) with
     | Some id when List.mem id ids -> id | _ -> invalid "citation outside selected context") |> List.sort_uniq Int64.compare in
-  if List.length answer_sources>8 then invalid "too many citations";
+  if List.length answer_sources>64 then invalid "too many sources";
   {answer_text;answer_sources})

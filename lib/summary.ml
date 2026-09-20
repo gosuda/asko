@@ -52,23 +52,12 @@ let render ~max_bytes ~range ~intent ~messages ~notes (summary:Llm.summary) =
   let fixed=String.length header+String.length conclusion+String.length notes+16 in
   let per_bullet=max 40 ((max_bytes-fixed)/max 1 (List.length summary.bullets)-96) in
   let bullets=List.map (fun (bullet:Llm.bullet) ->
-    let evidence=List.filter (fun (m:message) -> List.mem m.seq bullet.sources) messages in
-    let times=List.map (fun (m:message) -> m.created_at) evidence |> List.sort Float.compare in
-    let citation=match times with
-      | []->""
-      | first::rest ->
-          let last=List.fold_left (fun _ value->value) first rest in
-          if first=last then " (" ^ Scope.seoul_time first ^ ")"
-          else " (" ^ Scope.seoul_time first ^ "~" ^ Scope.seoul_time last ^ ")" in
     let body=Trigger.normalize bullet.text in
     let body=if String.length body>per_bullet then Utf8.take (max 4 (per_bullet-3)) body ^ "…" else body in
-    "• " ^ body ^ citation) summary.bullets |> String.concat "\n" in
+    "• " ^ body) summary.bullets |> String.concat "\n" in
   let body=header ^ "\n\n" ^ bullets ^ conclusion ^ (if notes="" then "" else "\n\n" ^ notes) in
   if String.length body<=max_bytes then body
   else Utf8.take (max_bytes-64) body ^ "\n(길이 제한으로 일부를 줄였어요.)"
 
-let render_answer ~max_bytes ~messages (answer:Llm.answer) =
-  let times=messages |> List.filter (fun (m:message)->List.mem m.seq answer.answer_sources)
-    |> List.map (fun (m:message)->Scope.seoul_time m.created_at) |> List.sort_uniq String.compare in
-  let evidence=if times=[] then "" else "\n(근거: " ^ String.concat ", " times ^ ")" in
-  Utf8.take (max 1 (max_bytes-String.length evidence)) answer.answer_text ^ evidence
+let render_answer ~max_bytes ~messages:_ (answer:Llm.answer) =
+  Utf8.take max_bytes answer.answer_text

@@ -2,6 +2,9 @@ type t = {
   source_id : string;
   port : int;
   db_path : string;
+  telemetry_path : string;
+  telemetry_max_bytes : int;
+  telemetry_backups : int;
   iris_url : string;
   bot_id : string;
   rooms : string list;
@@ -35,13 +38,14 @@ type t = {
 
 let default = {
   source_id="iris:phone:1"; port=8080; db_path="var/asko.sqlite";
+  telemetry_path="var/telemetry.jsonl";telemetry_max_bytes=10485760;telemetry_backups=3;
   iris_url="http://127.0.0.1:3000"; bot_id=""; rooms=[];
   dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=300.;
   cooldown=0.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
-  max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=16; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
+  max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=64; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
   openrouter_url="https://openrouter.ai/api/v1";
-  model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_object";
-  embedding_model="openai/text-embedding-3-small"; embedding_url="https://openrouter.ai/api/v1";
+  model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_schema";
+  embedding_model="google/gemini-embedding-001"; embedding_url="https://openrouter.ai/api/v1";
   api_key=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
   allow_insecure_loopback=false;
 }
@@ -56,6 +60,9 @@ let of_json json = Json_util.protect (fun () ->
   let strings name value = default (list string) value (field name json) in
   let c = {
     source_id=s "source_id" d.source_id; port=i "port" d.port;
+    telemetry_path=s "telemetry_path" d.telemetry_path;
+    telemetry_max_bytes=i "telemetry_max_bytes" d.telemetry_max_bytes;
+    telemetry_backups=i "telemetry_backups" d.telemetry_backups;
     db_path=s "db_path" d.db_path; iris_url=s "iris_url" d.iris_url;
     bot_id=s "bot_id" d.bot_id;
     rooms=strings "rooms" d.rooms; dry_run=b "dry_run" d.dry_run;
@@ -85,6 +92,8 @@ let of_json json = Json_util.protect (fun () ->
   } in
   if c.port < 1024 || c.port > 65535 then invalid "port must be 1024..65535";
   if c.source_id = "" || c.db_path = "" then invalid "source_id and db_path are required";
+  if c.telemetry_max_bytes<4096 || c.telemetry_max_bytes>104857600 || c.telemetry_backups<1 || c.telemetry_backups>10
+  then invalid "invalid telemetry rotation limits";
   if c.reasoning_max_tokens < 128 || c.reasoning_max_tokens > 8192 then invalid "reasoning_max_tokens must be 128..8192";
   if not (List.mem c.response_format ["json_object"; "json_schema"])
   then invalid "response_format must be json_object or json_schema";
@@ -118,8 +127,9 @@ let of_json json = Json_util.protect (fun () ->
 
 let load path =
   try match of_json (Yojson.Safe.from_file path) with
-    | Ok config when Filename.is_relative config.db_path ->
-        Ok {config with db_path=Filename.concat (Filename.dirname path) config.db_path}
+    | Ok config ->
+        let resolve p=if p<>"" && Filename.is_relative p then Filename.concat(Filename.dirname path) p else p in
+        Ok {config with db_path=resolve config.db_path;telemetry_path=resolve config.telemetry_path}
     | result -> result
   with
   | Sys_error _ -> Error "cannot read configuration file"
