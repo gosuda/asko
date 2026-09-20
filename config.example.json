@@ -11,7 +11,7 @@
   "model": "google/gemini-3.5-flash-lite",
   "reasoning_enabled": true,
   "response_format": "json_object",
-  "embedding_model": "openai/text-embedding-3-small",
+  "embedding_model": "google/gemini-embedding-001",
   "api_key": "",
   "api_key_env": "OPENROUTER_API_KEY",
   "ingest_token_env": "ASKO_INGEST_TOKEN",

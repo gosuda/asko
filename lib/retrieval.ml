@@ -15,8 +15,10 @@ let chunks messages =
     | [] -> List.rev (if current=[] then result else emit current :: result)
     | message :: rest ->
         let candidate = current @ [message] in
-        if current<>[] && (List.length candidate>32 || String.length (chunk_content candidate)>2000) then
-          let overlap = current |> List.rev |> take 2 |> List.rev in
+        if current<>[] && (Int64.div (List.hd current).seq 32L <> Int64.div message.seq 32L ||
+           List.length candidate>32 || String.length (chunk_content candidate)>2000) then
+          let overlap = if Int64.div (List.hd current).seq 32L <> Int64.div message.seq 32L
+            then [] else current |> List.rev |> take 2 |> List.rev in
           let next = if String.length (chunk_content (overlap @ [message]))<=2000 then overlap @ [message] else [message] in
           loop next (emit current :: result) rest
         else loop candidate result rest
@@ -63,64 +65,86 @@ let expand messages selected =
   done;
   List.filter (fun (m:message) -> Hashtbl.mem picked m.seq) messages
 
-let select ~config ~store ~llm ~range ~version ~topic ~focus messages =
+let cache_key chunk = "v2:" ^ Digest.to_hex (Digest.string (
+  String.concat "," (List.map (fun (m:message)->Int64.to_string m.seq) chunk.members) ^ "\000" ^ chunk.content))
+
+let valid_vector expected vector =
+  Array.length vector>0 && (match expected with None->true | Some n->Array.length vector=n)
+  && Array.for_all Float.is_finite vector && Array.exists (fun x->x<>0.) vector
+
+let expected_dimensions config =
+  if not(Config.local_embeddings config) && config.Config.embedding_model="google/gemini-embedding-001"
+  then Some 3072 else None
+
+let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages =
   let messages=List.filter (in_range range) messages in
   let originals=Hashtbl.create (List.length messages) in
-  List.iter (fun (m:message)->Hashtbl.replace originals m.seq m) messages;
-  let snapshot chunk=chunk.members |> List.map (fun (m:message)->m.seq)
-    |> List.sort_uniq Int64.compare |> List.filter_map (Hashtbl.find_opt originals) in
-  let candidates=chunks messages in
-  if candidates=[] then Lwt.return (Ok {messages=[];note=None}) else
+  List.iter(fun (m:message)->Hashtbl.replace originals m.seq m) messages;
+  let snapshot chunk=List.map (fun (m:message)->m.seq) chunk.members |> List.sort_uniq Int64.compare
+    |> List.filter_map (Hashtbl.find_opt originals) in
+  let values=Array.of_list(chunks messages) in
+  let vectors=Array.map (fun chunk->
+    match Store.get_embedding store ~source:range.source ~room:range.room_id ~key:(cache_key chunk)
+      ~model:config.Config.embedding_model ~content:chunk.content with
+    | Some vector when valid_vector (expected_dimensions config) vector->Some vector
+    | _->None) values in
+  let missing=Array.to_list(Array.mapi(fun i v->if v=None then Some i else None) vectors) |> List.filter_map Fun.id in
+  let total=Array.length values in
+  progress (total-List.length missing) total;
+  let rec fill pending = match pending with
+    | []->Lwt.return(Ok(values,vectors))
+    | _->
+        let batch=take (if Config.local_embeddings config then 1 else 16) pending in
+        let rest=List.filter (fun i->not(List.mem i batch)) pending in
+        Llm.embed llm (List.map(fun i->values.(i).content) batch) >>= function
+        | Error error->Lwt.return(Error error)
+        | Ok embedded when List.length embedded<>List.length batch ||
+            not(List.for_all (valid_vector (expected_dimensions config)) embedded)->
+            Lwt.return(Error(Llm.Bad_response {stage="retrieval";reason="invalid document embedding count or dimensions"}))
+        | Ok embedded->
+            (try
+              List.iter2(fun i vector->
+                let chunk=values.(i) in
+                Store.put_embedding ~snapshot:(snapshot chunk) store ~source:range.source ~room:range.room_id
+                  ~key:(cache_key chunk) ~model:config.embedding_model ~content:chunk.content
+                  ~at:(Unix.gettimeofday ()) ~version vector;
+                vectors.(i)<-Some vector) batch embedded;
+              progress (total-List.length rest) total;
+              Lwt.pause () >>= fun ()->fill rest
+             with Store.Stale_snapshot->Lwt.return(Error Llm.Source_changed)) in
+  fill missing
+
+let select ?corpus ~config ~store ~llm ~range ~version ~topic ~focus messages =
+  let messages=List.filter (in_range range) messages in
+  let corpus=Option.value ~default:messages corpus in
+  (* Index stable room windows once. Time/speaker filters restrict returned originals,
+     rather than rebuilding every chunk for every different query range. *)
+  let corpus_range={range with lower=At_time range.retention_start;
+    through_time=List.fold_left(fun at (m:message)->max at m.created_at) range.through_time messages} in
+  let corpus=List.filter (in_range corpus_range) corpus in
+  let permitted=Hashtbl.create(List.length messages) in
+  List.iter(fun (m:message)->Hashtbl.replace permitted m.seq ()) messages;
+  let selected_members chunk=List.filter(fun (m:message)->Hashtbl.mem permitted m.seq) chunk.members in
+  let candidates=chunks corpus |> List.filter(fun chunk->selected_members chunk<>[]) in
   let lexical_fallback error =
-    let hits = candidates |> List.map (fun chunk -> lexical topic chunk.content, chunk)
-      |> List.filter (fun (score,_) -> score>0.)
-      |> List.sort (fun (a,_) (b,_) -> Float.compare b a) |> take 6 in
-    if hits=[] then Error error else
-      Ok {messages=expand messages (List.concat_map (fun (_,chunk) -> chunk.members) hits);
-          note=Some "의미 검색을 사용할 수 없어 키워드로 확인한 대화만 정리했어요."}
-  in
+    let hits=candidates |> List.map(fun c->lexical topic (chunk_content(selected_members c)),c)
+      |> List.filter(fun (s,_)->s>0.) |> List.sort(fun (a,_) (b,_)->Float.compare b a) |> take 12 in
+    if hits=[] then Error error else Ok {messages=expand messages (List.concat_map(fun (_,c)->selected_members c) hits);
+      note=Some "의미 검색을 사용할 수 없어 키워드가 일치한 발췌만 확인했습니다. 전체 조사 결과가 아닙니다."} in
+  if messages=[] then Lwt.return(Ok {messages=[];note=None}) else
   let query=topic ^ (if focus=Conclusions then " 최종 결론 합의 정정" else "") in
   Llm.embed llm ~query:true [query] >>= function
-  | Error error -> Lwt.return (lexical_fallback error)
-  | Ok [query_vector] ->
-      let values=Array.of_list candidates in
-      let key chunk = Digest.to_hex (Digest.string (String.concat "," (List.map (fun (m:message) -> Int64.to_string m.seq) chunk.members) ^ "\000" ^ chunk.content)) in
-      let vectors=Array.map (fun chunk ->
-        match Store.get_embedding store ~source:range.source ~room:range.room_id ~key:(key chunk)
-          ~model:config.Config.embedding_model ~content:chunk.content with
-        | Some vector when Array.length vector=Array.length query_vector -> Some vector
-        | _ -> None) values in
-      let missing=Array.to_list (Array.mapi (fun index value -> if value=None then Some index else None) vectors) |> List.filter_map Fun.id in
-      let rec fill pending = match pending with
-        | [] -> Lwt.return (Ok ())
-        | _ ->
-            let batch=take (if Config.local_embeddings config then 1 else 32) pending in
-            let rest=List.filter (fun index -> not (List.mem index batch)) pending in
-            Llm.embed llm (List.map (fun index -> values.(index).content) batch) >>= function
-            | Error error -> Lwt.return (Error error)
-            | Ok embedded ->
-                if List.length embedded<>List.length batch || List.exists (fun v -> Array.length v<>Array.length query_vector) embedded
-                then Lwt.return (Error (Llm.Bad_response {stage="retrieval";reason="document embedding count or dimension mismatch"}))
-                else begin
-                  List.iter2 (fun index vector ->
-                    let chunk=values.(index) in
-                    (try
-                       Store.put_embedding ~snapshot:(snapshot chunk) store ~source:range.source ~room:range.room_id ~key:(key chunk)
-                         ~model:config.embedding_model ~content:chunk.content ~at:(Unix.gettimeofday ()) ~version vector;
-                       vectors.(index)<-Some vector
-                     with Store.Stale_snapshot -> vectors.(index)<-None)) batch embedded;
-                  fill rest
-                end
-      in
-      fill missing >|= (function
-        | Error error -> lexical_fallback error
-        | Ok () ->
-            let scored=Array.to_list (Array.mapi (fun index chunk ->
-              let semantic=Option.bind vectors.(index) (cosine query_vector) |> Option.value ~default:(-1.) in
-              let exact=lexical topic chunk.content in
-              semantic,exact,0.8*.semantic+.0.2*.exact,chunk) values) in
-            let hits=scored |> List.filter (fun (semantic,exact,_,chunk) ->
-                Store.snapshot_current store (snapshot chunk) && (semantic>=0.25 || exact>0.))
-              |> List.sort (fun (_,_,a,_) (_,_,b,_) -> Float.compare b a) |> take 6 in
-            Ok {messages=expand messages (List.concat_map (fun (_,_,_,chunk) -> chunk.members) hits);note=None})
-  | Ok _ -> Lwt.return (Error (Llm.Bad_response {stage="retrieval";reason="expected one query embedding"}))
+  | Error error->Lwt.return(lexical_fallback error)
+  | Ok [query_vector] when valid_vector (expected_dimensions config) query_vector->
+      index ~config ~store ~llm ~range:corpus_range ~version corpus >|= (function
+      | Error error->lexical_fallback error
+      | Ok(values,vectors)->
+          let scored=Array.to_list(Array.mapi(fun i chunk->
+            let eligible=selected_members chunk in
+            let semantic=Option.bind vectors.(i) (cosine query_vector) |> Option.value ~default:(-1.) in
+            let exact=lexical topic (chunk_content eligible) in
+            eligible,semantic,exact,0.8*.semantic+.0.2*.exact) values) in
+          let hits=scored |> List.filter(fun (members,semantic,exact,_)->members<>[] && (semantic>=0.25 || exact>0.))
+            |> List.sort(fun (_,_,_,a) (_,_,_,b)->Float.compare b a) |> take 12 in
+          Ok {messages=expand messages (List.concat_map(fun (members,_,_,_)->members) hits);note=None})
+  | Ok _->Lwt.return(Error(Llm.Bad_response {stage="retrieval";reason="invalid query embedding"}))

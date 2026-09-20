@@ -25,21 +25,26 @@ let () =
   let command = if Array.length Sys.argv > 1 then Sys.argv.(1) else "help" in
   let config_path = ref "config.local.json" in
   let output_path = ref "" in
+  let embedding_model = ref "" in
   let rest = if Array.length Sys.argv > 2 then Array.sub Sys.argv 2 (Array.length Sys.argv - 2) else [||] in
   let args = Array.append [|Sys.argv.(0)|] rest in
   (try Arg.parse_argv args ["--config", Arg.Set_string config_path, "Configuration JSON file";
-                          "--output", Arg.Set_string output_path, "New backup database path"]
+                          "--output", Arg.Set_string output_path, "New backup database path";
+                          "--embedding-model", Arg.Set_string embedding_model, "Embedding model override for this command"]
        (fun _ -> raise (Arg.Bad "unexpected argument")) "asko COMMAND [--config path]"
    with Arg.Bad message -> prerr_endline message; exit 2
       | Arg.Help message -> print_endline message; exit 0);
+  let get_config () =
+    let config=configuration !config_path in
+    if !embedding_model="" then config else {config with embedding_model= !embedding_model} in
   try
     match command with
     | "version" | "--version" -> Printf.printf "asko 0.1.0 (OCaml %s)\n" Sys.ocaml_version
-    | "serve" -> serve (configuration !config_path)
-    | "status" -> let config = configuration !config_path in
+    | "serve" -> serve (get_config ())
+    | "status" -> let config = get_config () in
         with_store config (fun store -> print_endline (Yojson.Safe.pretty_to_string (Store.stats store)))
     | "diagnose-jobs" ->
-        let config=configuration !config_path in
+        let config=get_config () in
         with_store config (fun store ->
           let now=Unix.gettimeofday () in
           let rows=Store.rows store {|SELECT j.id,j.state,j.created_at,j.available_at,j.expires_at,
@@ -54,7 +59,7 @@ let () =
               "job_error",optional 5;"delivery_state",optional 6;"delivery_error",optional 7]) in
           print_endline(Json_util.to_string (`List rows)))
     | "sync-names" ->
-        let config=configuration !config_path in
+        let config=get_config () in
         with_store config (fun store -> Lwt_main.run (
           let open Lwt.Infix in
           Lwt_list.iter_s (fun room -> Iris.room_names (Iris.create config) room >|= function
@@ -65,20 +70,43 @@ let () =
                     ~at:(Unix.gettimeofday ()) ~current:true) names);
                 print_endline(Json_util.to_string (`Assoc ["room_id",`String room;"profiles",`Int(List.length names)]))
             ) config.rooms))
-    | "outbox" -> let config = configuration !config_path in
+    | "outbox" -> let config = get_config () in
         with_store config (fun store ->
           Store.recent_outbox store |> List.map (fun (item:Store.outgoing) -> `Assoc [
             "id",`String (Int64.to_string item.id);"job_id",`String (Int64.to_string item.job_id);
             "room_id",`String item.room_id;"state",`String item.state;"body",`String item.body;
             "evidence",(match item.evidence with None->`Null | Some value->Yojson.Safe.from_string value)])
           |> fun rows -> print_endline (Yojson.Safe.pretty_to_string (`List rows)))
+    | "backfill-embeddings" ->
+        let config=get_config () in
+        with_store config (fun store -> Lwt_main.run (
+          let open Lwt.Infix in
+          Lwt_list.iter_s (fun room ->
+            let now=Unix.gettimeofday () in
+            let upper=Store.one store "SELECT MAX(seq) FROM messages WHERE source=? AND room_id=?"
+              [Store.text config.source_id;Store.text room]
+              (fun s->if Sqlite3.column_is_null s 0 then 0L else Sqlite3.column_int64 s 0)
+              |> Option.value ~default:0L in
+            let since=now-.float_of_int(config.retention_days*86400) in
+            let range={Types.source=config.source_id;room_id=room;lower=Types.At_time since;
+              before_seq=Int64.succ upper;through_time=now;retention_start=since;note=None} in
+            let messages=Store.messages ~max_bytes:config.max_history_bytes store range
+              |> Store.with_speaker_names store ~source:config.source_id ~room in
+            let version=Store.room_version store ~source:config.source_id ~room in
+            let progress done_ total=print_endline(Json_util.to_string (`Assoc [
+              "event",`String "embedding_backfill";"room",`String room;"model",`String config.embedding_model;
+              "messages",`Int(List.length messages);"through_seq",`String(Int64.to_string upper);
+              "completed_chunks",`Int done_;"total_chunks",`Int total])) in
+            Retrieval.index ~progress ~config ~store ~llm:(Llm.create config store) ~range ~version messages
+            >|= function Ok _->() | Error error->die(Json_util.to_string(Llm.error_details error))
+          ) config.rooms))
     | "backup" ->
         if !output_path="" then die "backup requires --output (existing files are never overwritten)";
-        let config=configuration !config_path in
+        let config=get_config () in
         if not (Sys.file_exists config.db_path) then die "database does not exist; start ingestion before backing up";
         with_store config (fun store -> Store.backup store !output_path; print_endline "backup completed")
     | "iris-info" ->
-        let config=configuration !config_path in
+        let config=get_config () in
         (match Lwt_main.run (Iris.configuration (Iris.create config)) with
          | Error error -> die ("Iris configuration unavailable: " ^ Net.error_name error)
          | Ok json ->
@@ -87,7 +115,7 @@ let () =
              print_endline (Json_util.to_string (`Assoc ["bot_id",bot;
                "message_send_rate",Option.value ~default:`Null (Json_util.field "message_send_rate" json)])))
     | "configure-iris" ->
-        let config=configuration !config_path in
+        let config=get_config () in
         let token=match Config.ingest_token config with Some value->value | None->die "set the ingest token before configuring Iris" in
         let endpoint=Uri.of_string (Printf.sprintf "http://127.0.0.1:%d/events/iris" config.port)
           |> fun uri -> Uri.add_query_param' uri ("token",token) |> Uri.to_string in
@@ -96,10 +124,10 @@ let () =
          | Ok _ -> die "Iris rejected endpoint configuration"
          | Error error -> die ("Iris configuration failed: " ^ Net.error_name error))
     | "embedding-mode" ->
-        let c=configuration !config_path in
+        let c=get_config () in
         print_endline (if Config.local_embeddings c then "local" else "remote")
     | "diagnose-recovery" ->
-        let config=configuration !config_path in
+        let config=get_config () in
         with_store config (fun store -> Lwt_main.run (
           let open Lwt.Infix in
           Lwt_list.iter_s (fun room ->
@@ -128,7 +156,7 @@ let () =
                     report ["latest",`String(Int64.to_string latest);"rows",`Int(List.length rows);"invalid_rows",`List bad]
           ) config.rooms))
     | "check-config" ->
-        let c = configuration !config_path in
+        let c = get_config () in
         print_endline (Yojson.Safe.pretty_to_string (`Assoc [
           "valid", `Bool true; "dry_run", `Bool c.dry_run; "allowed_rooms", `Int (List.length c.rooms);
           "model", `String c.model; "reasoning_enabled", `Bool c.reasoning_enabled;
@@ -141,7 +169,7 @@ let () =
          | Ok (200, body) -> Printf.printf "{\"https\":true,\"status\":200,\"bytes\":%d}\n" (String.length body)
          | Ok (status, _) -> die ("HTTPS probe status " ^ string_of_int status)
          | Error error -> die ("HTTPS probe failed: " ^ Net.error_name error))
-    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backup --output path | probe-https | version [--config path]"
+    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backfill-embeddings --job-id ID | backup --output path | probe-https | version [--config path]"
   with
   | Store.Error error -> die ("database error: " ^ error)
   | Sys_error _ -> die "filesystem operation failed"

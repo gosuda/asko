@@ -192,6 +192,9 @@ let embed t ?(query=false) inputs =
   let prefix=if local then (if query then "Query: " else "Document: ") else "" in
   let body = `Assoc ["model",`String t.config.embedding_model;
     "input",strings (List.map (fun text->prefix ^ text) inputs); "encoding_format",`String "float"] in
+  let body=if not local && t.config.embedding_model="google/gemini-embedding-001" then
+    `Assoc (Json_util.object_ body @ ["dimensions",`Int 3072;
+      "input_type",`String(if query then "search_query" else "search_document")]) else body in
   let request=if not local then
     let fields=Json_util.object_ body in
     call t ~output_tokens:0 ~path:"/embeddings"
