@@ -124,7 +124,7 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
         (match Json_util.field "finish_reason" choice with
          | Some (`String "length") -> Json_util.invalid "truncated completion" | _ -> ());
         Json_util.required "message" choice |> Json_util.required "content" |> Json_util.string
-        |> Yojson.Safe.from_string) with
+        |> Json_util.model_json) with
        | Ok json -> Ok json | Error reason -> Error (Bad_response {stage="structured_completion";reason}))
 
 let reject_extra allowed json =
@@ -219,9 +219,9 @@ let embed t ?(query=false) inputs =
 
 let answer_schema = object_schema [
   "answer",string_schema;
-  "sources",`Assoc ["type",`String "array";"maxItems",`Int 8;"items",string_schema]]
+  "sources",`Assoc ["type",`String "array";"maxItems",`Int 64;"items",string_schema]]
 
-(* Leave room for the requester label and evidence timestamps in the sent reply. *)
+(* Leave room for the requester label. Evidence remains internal. *)
 let answer_limit config =
   config.Config.max_response_bytes - min 1000 (config.max_response_bytes / 4)
 
@@ -235,5 +235,5 @@ let decode_answer ~max_bytes ~messages json = Json_util.protect (fun () ->
   let answer_sources=required "sources" json |> list (fun value ->
     match Int64.of_string_opt (string value) with
     | Some id when List.mem id ids -> id | _ -> invalid "citation outside selected context") |> List.sort_uniq Int64.compare in
-  if List.length answer_sources>8 then invalid "too many citations";
+  if List.length answer_sources>64 then invalid "too many sources";
   {answer_text;answer_sources})

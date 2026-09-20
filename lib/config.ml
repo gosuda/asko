@@ -38,9 +38,9 @@ let default = {
   iris_url="http://127.0.0.1:3000"; bot_id=""; rooms=[];
   dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=300.;
   cooldown=0.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
-  max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=16; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
+  max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=64; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
   openrouter_url="https://openrouter.ai/api/v1";
-  model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_object";
+  model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_schema";
   embedding_model="google/gemini-embedding-001"; embedding_url="https://openrouter.ai/api/v1";
   api_key=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
   allow_insecure_loopback=false;

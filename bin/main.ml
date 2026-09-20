@@ -26,11 +26,13 @@ let () =
   let config_path = ref "config.local.json" in
   let output_path = ref "" in
   let embedding_model = ref "" in
+  let job_id = ref 0 in
   let rest = if Array.length Sys.argv > 2 then Array.sub Sys.argv 2 (Array.length Sys.argv - 2) else [||] in
   let args = Array.append [|Sys.argv.(0)|] rest in
   (try Arg.parse_argv args ["--config", Arg.Set_string config_path, "Configuration JSON file";
                           "--output", Arg.Set_string output_path, "New backup database path";
-                          "--embedding-model", Arg.Set_string embedding_model, "Embedding model override for this command"]
+                          "--embedding-model", Arg.Set_string embedding_model, "Embedding model override for this command";
+                          "--job-id", Arg.Set_int job_id, "Historical job for replay (never sends)"]
        (fun _ -> raise (Arg.Bad "unexpected argument")) "asko COMMAND [--config path]"
    with Arg.Bad message -> prerr_endline message; exit 2
       | Arg.Help message -> print_endline message; exit 0);
@@ -100,6 +102,34 @@ let () =
             Retrieval.index ~progress ~config ~store ~llm:(Llm.create config store) ~range ~version messages
             >|= function Ok _->() | Error error->die(Json_util.to_string(Llm.error_details error))
           ) config.rooms))
+    | "replay-job" ->
+        if !job_id<=0 then die "replay-job requires --job-id; it never queues or sends a reply";
+        let config=get_config () in
+        with_store config (fun store ->
+          let source,seq,prompt=match Store.one store "SELECT source,request_seq,prompt FROM jobs WHERE id=?"
+            [Store.integer(Int64.of_int !job_id)]
+            (fun s->Sqlite3.column_text s 0,Sqlite3.column_int64 s 1,Sqlite3.column_text s 2) with
+            | None->die "job unavailable" | Some value->value in
+          let message=Store.get_message store ~source ~seq |> Option.get in
+          if source<>config.source_id || not(Config.allowed config message.room_id) then die "room not allowed";
+          let request={Types.message;trigger=Types.Mention;prompt} in
+          let since=Unix.gettimeofday ()-.float_of_int(config.retention_days*86400) in
+          let range={Types.source;room_id=message.room_id;lower=Types.At_time since;
+            before_seq=seq;through_time=message.created_at;retention_start=since;note=None} in
+          let history=Store.messages ~max_bytes:config.max_history_bytes store range
+            |> Store.with_speaker_names store ~source ~room:message.room_id in
+          let engine=Engine.create config store in
+          Lwt_main.run (let open Lwt.Infix in
+            Engine.reply_context engine message since >>= fun anchor->
+            let reference=Store.answer_reference store message anchor in
+            Conversation.run ~config ~store ~llm:(Llm.create config store) ~name_messages:Lwt.return
+              ~request ~anchor ~reference ~history ~range
+              ~version:(Store.room_version store ~source ~room:message.room_id) >|= function
+            | Error error->die(Json_util.to_string(Llm.error_details error))
+            | Ok result->print_endline(Json_util.to_string (`Assoc ["sent",`Bool false;
+                "job_id",`Int !job_id;"coverage",result.Conversation.coverage;
+                "answer",`String(Summary.render_answer ~max_bytes:config.max_response_bytes
+                  ~messages:result.evidence_messages result.answer)]))))
     | "backup" ->
         if !output_path="" then die "backup requires --output (existing files are never overwritten)";
         let config=get_config () in
@@ -169,7 +199,7 @@ let () =
          | Ok (200, body) -> Printf.printf "{\"https\":true,\"status\":200,\"bytes\":%d}\n" (String.length body)
          | Ok (status, _) -> die ("HTTPS probe status " ^ string_of_int status)
          | Error error -> die ("HTTPS probe failed: " ^ Net.error_name error))
-    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backfill-embeddings --job-id ID | backup --output path | probe-https | version [--config path]"
+    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backfill-embeddings | replay-job --job-id ID | backup --output path | probe-https | version [--config path]"
   with
   | Store.Error error -> die ("database error: " ^ error)
   | Sys_error _ -> die "filesystem operation failed"

@@ -53,7 +53,7 @@ let () =
   insert fixture ~seq:207 ~room:"1002" ~sender:"2002" ~at:(now-.10.) ~text:"PRIVATE_ROOM_SHOULD_NEVER_LEAK" ();
   let chats=ref 0 and embeddings=ref 0 and deliveries=ref [] and contexts=ref [] in
   let bad_citation=ref false and backend_port=ref None in
-  let fail_second_page=ref false in
+  let fail_second_page=ref false and timeout_second_page=ref false in
   let stop,wake_stop=Lwt.wait () and mock_stop,wake_mock=Lwt.wait () in
   let cleanup () =
     Store.close store; ignore (Sqlite3.db_close fixture);
@@ -66,7 +66,7 @@ let () =
     let base=Printf.sprintf "http://127.0.0.1:%d" port in
     let config={Config.default with source_id="pipeline:1"; port=0; db_path=path;
       iris_url=base;openrouter_url=base^"/api/v1";embedding_url=base^"/api/v1";reasoning_enabled=false;bot_id="9999";rooms=["1001"];
-      cooldown=0.;dry_run=false;recovery_interval=1.;send_interval=0.2;confirm_timeout=2.;
+      cooldown=0.;dry_run=false;response_format="json_object";recovery_interval=1.;send_interval=0.2;confirm_timeout=2.;
       api_key="not-a-real-key";api_key_env="ASKO_PIPELINE_KEY";ingest_token_env="ASKO_PIPELINE_TOKEN";allow_insecure_loopback=true} in
     Unix.putenv config.api_key_env ""; Unix.putenv config.ingest_token_env "test-ingress";
     let callback _ request body =
@@ -78,6 +78,8 @@ let () =
           let sql=field "query" json |> Json_util.string in
           let bindings=field "bind" json |> Json_util.list Fun.id in
           if Retrieval.contains sql "FROM db2." then response (`Assoc ["data",`List [`Assoc ["user_id",`String "2001";"name",`String "앨리스";"enc",`Int 0]]])
+          else if !timeout_second_page && List.length bindings=5 && List.nth bindings 1=`String "200" then
+            Lwt_unix.sleep 0.4 >>= fun ()->response (`Assoc ["data",`List(raw_query fixture sql bindings)])
           else if !fail_second_page && List.length bindings=5 && List.nth bindings 1=`String "200" then
             Cohttp_lwt_unix.Server.respond_string ~status:`Service_unavailable ~body:"{}" ()
           else response (`Assoc ["data",`List (raw_query fixture sql bindings)])
@@ -144,11 +146,19 @@ let () =
                 let system=field "messages" json |> Json_util.list Fun.id |> List.hd |> field "content" |> Json_util.string in
                 check "JSON mode includes the output contract in system instructions"
                   (Retrieval.contains system "\"additionalProperties\":false" && Retrieval.contains system "\"required\"");
-                if Json_util.field "request" payload<>None then "asko_intent" else "asko_summary"
+                if Retrieval.contains system "(asko_context_plan)" then "asko_context_plan"
+                else if Retrieval.contains system "(asko_answer_audit)" then "asko_answer_audit"
+                else if Json_util.field "request" payload<>None then "asko_intent" else "asko_summary"
             | `String "json_schema" -> field "json_schema" format |> field "name" |> Json_util.string
             | _ -> failwith "unsupported response format" in
           check "other-room contents never reach model" (not (Retrieval.contains (Json_util.to_string payload) "PRIVATE_ROOM_SHOULD_NEVER_LEAK"));
-          let answer=if name="asko_intent" then
+          let answer=if name="asko_context_plan" then
+              let request=field "request" payload |> Json_util.string in
+              `Assoc ["mode",`String(if Retrieval.contains request "2시간" then "read_all" else "search");
+                "start",`Null;"end",`Null;"speaker_id",`Null;"query",`String "postgres";
+                "followup",`Bool(field "previous_exchange" payload<>`Null && Retrieval.contains request "이 얘기")]
+            else if name="asko_answer_audit" then `Assoc ["supported",`Bool true;"issues",`String ""]
+            else if name="asko_intent" then
               if field "has_reply_anchor" payload=`Bool true then begin
                 check "reply text reaches the classifier" (field "reply_context" payload<>`Null);
                 Yojson.Safe.from_string {|{"action":"summarize","scope":"from_reply","minutes":null,"topic":null,"focus":"overview","question":null}|}
@@ -193,10 +203,31 @@ let () =
       check "schema-capable models retain strict output support" (Result.is_ok strict);
       let iris=Iris.create config in
       fail_second_page:=true;
-      Recovery.room ~config ~store ~iris "1001" >>= fun interrupted ->
+      let progress=ref None in
+      Recovery.room ~on_progress:(fun p->progress:=Some p) ~config ~store ~iris "1001" >>= fun interrupted ->
       check "failed recovery page never advances the cursor"
         (interrupted=Error (Net.Http_status 503) && Store.cursor store ~source:config.source_id ~room:"1001"=200L);
+      let p=Option.get !progress in
+      check "recovery failure identifies the exact second page and committed cursor"
+        (p.Recovery.operation="recovery" && p.stage="page" && p.page=2 && p.cursor=200L && p.processed=200);
+      timeout_second_page:=true;
+      let timeout_engine=Engine.create {config with http_timeout=0.15} store in
+      Engine.recover timeout_engine "1001" >>= fun timed_out ->
+      let detail=List.hd(Engine.sync_errors timeout_engine "1001") in
+      check "real HTTP timeout reports the page and cursor instead of a generic model failure"
+        (timed_out=Error Net.Timeout && field "code" detail=`String "iris_sync_timeout"
+         && field "stage" detail=`String "page" && field "cursor" detail=`String "200"
+         && field "http_timeout_seconds" detail=`Float 0.15);
+      timeout_second_page:=false;
+      let diagnostic_engine=Engine.create config store in
+      Engine.recover diagnostic_engine "1001" >>= fun failed_sync ->
+      check "background failure retains structured room-scoped diagnostics"
+        (Result.is_error failed_sync && List.length(Engine.sync_errors diagnostic_engine "1001")=1
+         && Engine.sync_errors diagnostic_engine "1002"=[]);
       fail_second_page:=false;
+      Engine.recover diagnostic_engine "1001" >>= fun _ ->
+      check "successful recovery clears its unresolved error"
+        (Engine.sync_errors diagnostic_engine "1001"=[]);
       Recovery.room ~config ~store ~iris "1001" >>= fun resumed ->
       check "recovery resumes from its last committed page" (Result.is_ok resumed && Store.cursor store ~source:config.source_id ~room:"1001"=206L);
       let range={Types.source=config.source_id;room_id="1001";lower=Types.At_time(now-.3600.);
@@ -210,6 +241,10 @@ let () =
       let embedded_before= !embeddings in
       Retrieval.select ~config ~store ~llm ~range ~version ~topic:"postgres" ~focus:Types.Conclusions history >>= fun _ ->
       check "cached document embeddings are reused" (!embeddings=embedded_before+1);
+      let before_backfill= !embeddings in
+      Retrieval.index ~config ~store ~llm ~range ~version history >>= fun indexed ->
+      check "backfill resumes without rebilling completed chunks"
+        (Result.is_ok indexed && !embeddings=before_backfill);
       let request={Types.message={m with seq=209L;created_at=now};trigger=Types.Mention;prompt="postgres"} in
       let capped={config with max_tool_rounds=1} in
       let calls_before= !chats in
@@ -217,10 +252,10 @@ let () =
         ~request ~anchor:None ~reference:None ~history ~range ~version >>= fun capped_result ->
       check "tool round limit stops at configured call count" (!chats=calls_before+1 &&
         capped_result=Error (Llm.Limit_exceeded {resource="max_tool_rounds";actual=Some 1;limit=1}));
-      let capped={config with max_tool_rounds=2} in
+      let capped={config with max_tool_rounds=4} in
       Conversation.run ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
         ~request ~anchor:None ~reference:None ~history ~range ~version >>= fun completed ->
-      check "final permitted round can answer" (Result.is_ok completed && !chats=calls_before+3);
+      check "final permitted round can answer" (Result.is_ok completed && !chats=calls_before+5);
       let dry_store=Store.open_ ":memory:" in
       let dry_message={m with Types.seq=209L;native_id=Some(native_id 209);text="/요약 도움말";created_at=now} in
       ignore(Store.put_message dry_store ~is_command:true dry_message);
