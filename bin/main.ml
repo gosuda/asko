@@ -3,6 +3,7 @@ open Asko
 let die message = prerr_endline message; exit 1
 let configuration path = match Config.load path with Ok value -> value | Error message -> die message
 let with_store config f =
+  Telemetry.configure ~path:config.Config.telemetry_path ~max_bytes:config.telemetry_max_bytes ~backups:config.telemetry_backups;
   let store = Store.open_ config.Config.db_path in
   Fun.protect ~finally:(fun () -> Store.close store) (fun () -> f store)
 
@@ -99,7 +100,8 @@ let () =
               "event",`String "embedding_backfill";"room",`String room;"model",`String config.embedding_model;
               "messages",`Int(List.length messages);"through_seq",`String(Int64.to_string upper);
               "completed_chunks",`Int done_;"total_chunks",`Int total])) in
-            Retrieval.index ~progress ~config ~store ~llm:(Llm.create config store) ~range ~version messages
+            Telemetry.with_trace ~kind:"backfill" ~fields:["room_id",`String room] (fun ()->
+              Retrieval.index ~progress ~config ~store ~llm:(Llm.create config store) ~range ~version messages)
             >|= function Ok _->() | Error error->die(Json_util.to_string(Llm.error_details error))
           ) config.rooms))
     | "replay-job" ->
@@ -119,7 +121,9 @@ let () =
           let history=Store.messages ~max_bytes:config.max_history_bytes store range
             |> Store.with_speaker_names store ~source ~room:message.room_id in
           let engine=Engine.create config store in
-          Lwt_main.run (let open Lwt.Infix in
+          Lwt_main.run (Telemetry.with_trace ~kind:"replay" ~fields:["job_id",`String(string_of_int !job_id);
+            "request_seq",`String(Int64.to_string seq);"room_id",`String message.room_id] (fun ()->
+            let open Lwt.Infix in
             Engine.reply_context engine message since >>= fun anchor->
             let reference=Store.answer_reference store message anchor in
             Conversation.run ~config ~store ~llm:(Llm.create config store) ~name_messages:Lwt.return
@@ -129,7 +133,7 @@ let () =
             | Ok result->print_endline(Json_util.to_string (`Assoc ["sent",`Bool false;
                 "job_id",`Int !job_id;"coverage",result.Conversation.coverage;
                 "answer",`String(Summary.render_answer ~max_bytes:config.max_response_bytes
-                  ~messages:result.evidence_messages result.answer)]))))
+                  ~messages:result.evidence_messages result.answer)])))))
     | "backup" ->
         if !output_path="" then die "backup requires --output (existing files are never overwritten)";
         let config=get_config () in

@@ -420,6 +420,11 @@ let begin_send t outgoing ~floor_seq ~now =
     [integer floor_seq; real now; integer outgoing.id];
   Sqlite3.changes t.db = 1
 
+let log_delivery_confirmed outgoing =
+  Telemetry.emit "delivery_confirmed" ["job_id",`String(Int64.to_string outgoing.job_id);
+    "outbox_id",`String(Int64.to_string outgoing.id);"room_id",`String outgoing.room_id;
+    "since_send_ms",(match outgoing.attempted_at with None->`Null | Some at->Telemetry.ms(Unix.gettimeofday ()-.at))]
+
 let outgoing_state t outgoing ~state ?error () = transaction t (fun () ->
   run t "UPDATE outbox SET state=?,error=? WHERE id=? AND state NOT IN ('sent','failed','expired','dry_run','cancelled')"
     [text state; opt_text error; integer outgoing.id];
@@ -430,7 +435,8 @@ let outgoing_state t outgoing ~state ?error () = transaction t (fun () ->
     | "failed" -> "failed"
     | _ -> "awaiting_send" in
   if changed then run t "UPDATE jobs SET state=?,last_error=? WHERE id=?"
-      [text job_state; opt_text error; integer outgoing.job_id])
+      [text job_state; opt_text error; integer outgoing.job_id];
+  if changed && state="sent" then log_delivery_confirmed outgoing)
 
 let confirm_message t (message : message) =
   if message.is_bot then
@@ -440,7 +446,8 @@ let confirm_message t (message : message) =
     | [outgoing] ->
         (* Called from ingestion's transaction; do not open a nested transaction. *)
         run t "UPDATE outbox SET state='sent',error=NULL WHERE id=?" [integer outgoing.id];
-        run t "UPDATE jobs SET state='completed',last_error=NULL WHERE id=?" [integer outgoing.job_id]
+        run t "UPDATE jobs SET state='completed',last_error=NULL WHERE id=?" [integer outgoing.job_id];
+        log_delivery_confirmed outgoing
     | _ -> ()
 
 let get_embedding t ~source ~room ~key ~model ~content =

@@ -16,15 +16,19 @@ let sync_key room operation=room ^ ":" ^ operation
 let sync_errors t room=List.filter_map (fun operation->Hashtbl.find_opt t.sync_failures (sync_key room operation))
   ["recovery";"reconcile"]
 let synchronize t ?through ?job_id ?(on_progress=(fun _->())) ~operation room =
+  Telemetry.ensure ~kind:operation ~fields:["room_id",`String room] (fun ()->
+  Telemetry.result ~error:Net.error_name ~fields:["operation",`String operation] "iris_sync" (fun ()->
   let progress=Recovery.start operation (Store.cursor t.store ~source:t.config.source_id ~room) in
   let current=ref progress in
   let update p =
     let p={p with Recovery.started_at=progress.started_at} in
     current:=p;on_progress p in
   on_progress progress;
-  Lwt_mutex.with_lock t.recovery_lock (fun () ->
+  Telemetry.span "iris_lock_wait" (fun ()->Lwt_mutex.lock t.recovery_lock) >>= fun ()->
+  Lwt.finalize (fun () ->
     if operation="reconcile" then Recovery.reconcile ~on_progress:update ~config:t.config ~store:t.store ~iris:t.iris room
     else Recovery.room ~on_progress:update ~config:t.config ~store:t.store ~iris:t.iris ?through room)
+    (fun ()->Lwt_mutex.unlock t.recovery_lock;Lwt.return_unit)
   >|= fun result->
   (match result with
    | Ok ()->Hashtbl.remove t.sync_failures (sync_key room operation)
@@ -35,7 +39,7 @@ let synchronize t ?through ?job_id ?(on_progress=(fun _->())) ~operation room =
          "origin_job_id",Json_util.option (fun id->`String(Int64.to_string id)) job_id]) in
        Hashtbl.replace t.sync_failures (sync_key room operation) diagnostic;
        prerr_endline(Json_util.to_string (`Assoc ["event",`String(operation ^ "_failed");"error",diagnostic])));
-  result
+  result))
 let recover t ?through ?job_id ?on_progress room = synchronize t ?through ?job_id ?on_progress ~operation:"recovery" room
 let reconcile t room = synchronize t ~operation:"reconcile" room
 
@@ -54,18 +58,21 @@ let sync_footer (job:Store.job) ~budget errors =
       "details",`String "service.log"]@fields))
 
 let refresh_names t room =
+  Telemetry.span "names_refresh" (fun ()->
   let now=Unix.gettimeofday () in
   match Hashtbl.find_opt t.name_refresh room with
-  | Some at when now-.at<60. -> Lwt.return_unit
+  | Some at when now-.at<60. -> Telemetry.emit "names_cache" ["hit",`Bool true];Lwt.return_unit
   | _ ->
+      Telemetry.emit "names_cache" ["hit",`Bool false];
       Hashtbl.replace t.name_refresh room now;
       Iris.room_names t.iris room >|= function
       | Error error -> log "names_refresh_failed" (Net.error_name error)
       | Ok names -> Store.transaction t.store (fun () ->
           List.iter (fun (user_id,name)->Store.observe_name t.store ~source:t.config.source_id
-            ~room ~user_id ~name ~at:now ~current:true) names)
+            ~room ~user_id ~name ~at:now ~current:true) names))
 
 let finish t job ?snapshot ?snapshot_version ?evidence ?(sync_errors=[]) ?(refresh=true) body =
+  Telemetry.span "outbox_enqueue" (fun ()->
   let sender=job.Store.invocation.message in
   let unresolved=List.exists(fun operation->Hashtbl.mem t.sync_failures (sync_key sender.room_id operation))
     ["recovery";"reconcile"] in
@@ -80,7 +87,8 @@ let finish t job ?snapshot ?snapshot_version ?evidence ?(sync_errors=[]) ?(refre
   let footer=sync_footer job ~budget errors in
   let body=prefix ^ Utf8.take (max 0 (budget-String.length footer)) body ^ footer in
   Store.finish_job ?snapshot t.store job ~body ~dry_run:t.config.dry_run ~snapshot_version ~evidence;
-  Lwt.return_unit
+  Telemetry.emit "outbox_ready" ["job_id",`String(Int64.to_string job.id);"answer_bytes",`Int(String.length body)];
+  Lwt.return_unit)
 
 let diagnostic t (job:Store.job) error =
   let details=Json_util.object_ (Llm.error_details error) in
@@ -140,7 +148,7 @@ let speaker_names t messages =
   | (m:message)::_ -> refresh_names t m.room_id >|= fun () ->
       Store.with_speaker_names t.store ~source:m.source ~room:m.room_id messages
 
-let process_job t (job:Store.job) =
+let process_job_body t (job:Store.job) =
   let active_sync=ref None and request_sync_errors=ref [] in
   let request=job.invocation.message in
   if request.source<>t.config.source_id || not (Config.allowed t.config request.room_id) || request.deleted || request.is_bot
@@ -155,14 +163,16 @@ let process_job t (job:Store.job) =
       request_sync_errors:=sync_errors t request.room_id;
       if recovery=Error Net.Source_changed then failed t job (Llm.Network Net.Source_changed) else
       let since=Unix.gettimeofday () -. float_of_int (t.config.retention_days*86400) in
-      reply_context t request since >>= fun anchor ->
+      Telemetry.span "reply_context" (fun ()->reply_context t request since) >>= fun anchor ->
       let reference=Store.answer_reference t.store request anchor in
       let range={source=request.source;room_id=request.room_id;lower=At_time since;
         before_seq=request.seq;through_time=request.created_at;retention_start=since;
         note=(if !request_sync_errors=[] then None else Some "iris_sync_incomplete")} in
       refresh_names t request.room_id >>= fun () ->
-      let history=Store.messages ~max_bytes:t.config.max_history_bytes t.store range
-        |> Store.with_speaker_names t.store ~source:request.source ~room:request.room_id in
+      let history=Telemetry.sync "history_load" (fun ()->
+        Store.messages ~max_bytes:t.config.max_history_bytes t.store range
+        |> Store.with_speaker_names t.store ~source:request.source ~room:request.room_id) in
+      Telemetry.emit "history_loaded" ["message_count",`Int(List.length history)];
       let version=Store.room_version t.store ~source:request.source ~room:request.room_id in
       Conversation.run ~config:t.config ~store:t.store ~llm:t.llm ~name_messages:(speaker_names t)
         ~request:job.invocation ~anchor ~reference ~history ~range ~version >>= function
@@ -200,12 +210,28 @@ let process_job t (job:Store.job) =
           failed t ~sync_errors:errors job Llm.Request_timeout
       | exn -> failed t job (Llm.Internal_error (Printexc.exn_slot_name exn)))
 
+let process_job t (job:Store.job) =
+  let now=Unix.gettimeofday () in
+  let queue=Store.one t.store "SELECT created_at,available_at FROM jobs WHERE id=?" [Store.integer job.id]
+    (fun s->["queue_ms",Telemetry.ms(now-.Sqlite3.column_double s 1);
+      "request_age_ms",Telemetry.ms(now-.Sqlite3.column_double s 0)]) |> Option.value ~default:[] in
+  Telemetry.with_trace ~kind:"job" ~fields:(["job_id",`String(Int64.to_string job.id);
+    "request_seq",`String(Int64.to_string job.invocation.message.seq);"attempt",`Int job.attempts;
+    "room_id",`String job.invocation.message.room_id]@queue) (fun ()->
+    Telemetry.span "job" (fun ()->process_job_body t job) >|= fun ()->
+    let state=Store.one t.store "SELECT state FROM jobs WHERE id=?" [Store.integer job.id]
+      (fun s->Sqlite3.column_text s 0) |> Option.value ~default:"missing" in
+    Telemetry.emit "job_outcome" ["state",`String state])
+
 let send_tick t =
   if t.config.dry_run then Lwt.return_unit else
   let now=Unix.gettimeofday () in
   match Store.next_outgoing t.store ~now with
   | None -> Lwt.return_unit
   | Some outgoing when outgoing.state="awaiting_echo" ->
+      Telemetry.with_trace ~kind:"delivery" ~fields:["job_id",`String(Int64.to_string outgoing.job_id);
+        "outbox_id",`String(Int64.to_string outgoing.id);"room_id",`String outgoing.room_id]
+        (fun ()->Telemetry.span "delivery_confirmation" (fun ()->
       let floor=Option.value ~default:0L outgoing.floor_seq in
       let remaining=t.config.confirm_timeout -. (now -. Option.value ~default:now outgoing.attempted_at) in
       let observed = if remaining<=0. then Lwt.return (Error Net.Timeout) else
@@ -216,9 +242,12 @@ let send_tick t =
         | Ok (Some _) -> Store.outgoing_state t.store outgoing ~state:"sent" (); Lwt.return_unit
         | _ when Unix.gettimeofday () -. Option.value ~default:now outgoing.attempted_at >= t.config.confirm_timeout ->
             Store.outgoing_state t.store outgoing ~state:"uncertain" ~error:"echo_not_confirmed" (); Lwt.return_unit
-        | _ -> Lwt.return_unit)
+        | _ -> Lwt.return_unit)))
   | Some _ when now<t.next_send_at -> Lwt.return_unit
   | Some outgoing ->
+      Telemetry.with_trace ~kind:"delivery" ~fields:["job_id",`String(Int64.to_string outgoing.job_id);
+        "outbox_id",`String(Int64.to_string outgoing.id);"room_id",`String outgoing.room_id]
+        (fun ()->Telemetry.span "delivery" (fun ()->
       t.next_send_at <- now +. t.config.send_interval;
       if outgoing.source<>t.config.source_id || not (Config.allowed t.config outgoing.room_id) then
         (Store.outgoing_state t.store outgoing ~state:"failed" ~error:"scope_changed" (); Lwt.return_unit)
@@ -237,9 +266,13 @@ let send_tick t =
             | Error error -> log "delivery_waiting" (Net.error_name error); Lwt.return_unit
             | Ok (floor,_) ->
                 if not (Store.begin_send t.store outgoing ~floor_seq:floor ~now:(Unix.gettimeofday ())) then Lwt.return_unit
-                else Iris.reply t.iris ~room:outgoing.room_id ~body:outgoing.body >|= function
+                else
+                  let age=Store.one t.store "SELECT created_at FROM jobs WHERE id=?" [Store.integer outgoing.job_id]
+                    (fun s->Telemetry.ms(Unix.gettimeofday ()-.Sqlite3.column_double s 0)) |> Option.value ~default:`Null in
+                  Telemetry.emit "delivery_attempt" ["queue_to_send_ms",age];
+                  Iris.reply t.iris ~room:outgoing.room_id ~body:outgoing.body >|= function
                   | Ok () -> Store.outgoing_state t.store outgoing ~state:"awaiting_echo" ()
-                  | Error error -> Store.outgoing_state t.store outgoing ~state:"uncertain" ~error:(Net.error_name error) ()
+                  | Error error -> Store.outgoing_state t.store outgoing ~state:"uncertain" ~error:(Net.error_name error) ()))
 
 let run ?on_ready ~stop t =
   let rec supervise name step delay () =

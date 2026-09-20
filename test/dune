@@ -37,3 +37,8 @@
  (name test_context)
  (modules test_context)
  (libraries asko unix yojson lwt.unix cohttp-lwt-unix))
+
+(test
+ (name test_telemetry)
+ (modules test_telemetry)
+ (libraries asko unix yojson lwt.unix))

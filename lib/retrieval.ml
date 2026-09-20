@@ -77,19 +77,22 @@ let expected_dimensions config =
   then Some 3072 else None
 
 let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages =
+  Telemetry.result ~error:Llm.error_name ~fields:["message_count",`Int(List.length messages)] "embedding_index" (fun ()->
   let messages=List.filter (in_range range) messages in
   let originals=Hashtbl.create (List.length messages) in
   List.iter(fun (m:message)->Hashtbl.replace originals m.seq m) messages;
   let snapshot chunk=List.map (fun (m:message)->m.seq) chunk.members |> List.sort_uniq Int64.compare
     |> List.filter_map (Hashtbl.find_opt originals) in
-  let values=Array.of_list(chunks messages) in
-  let vectors=Array.map (fun chunk->
+  let values=Telemetry.sync "chunk_build" (fun ()->Array.of_list(chunks messages)) in
+  let vectors=Telemetry.sync "vector_cache_load" (fun ()->Array.map (fun chunk->
     match Store.get_embedding store ~source:range.source ~room:range.room_id ~key:(cache_key chunk)
       ~model:config.Config.embedding_model ~content:chunk.content with
     | Some vector when valid_vector (expected_dimensions config) vector->Some vector
-    | _->None) values in
+    | _->None) values) in
   let missing=Array.to_list(Array.mapi(fun i v->if v=None then Some i else None) vectors) |> List.filter_map Fun.id in
   let total=Array.length values in
+  Telemetry.emit "embedding_cache" ["total_chunks",`Int total;"cache_hits",`Int(total-List.length missing);
+    "cache_misses",`Int(List.length missing);"model",`String config.Config.embedding_model];
   progress (total-List.length missing) total;
   let rec fill pending = match pending with
     | []->Lwt.return(Ok(values,vectors))
@@ -103,18 +106,20 @@ let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages
             Lwt.return(Error(Llm.Bad_response {stage="retrieval";reason="invalid document embedding count or dimensions"}))
         | Ok embedded->
             (try
-              List.iter2(fun i vector->
+              Telemetry.sync ~fields:["batch_size",`Int(List.length batch)] "vector_cache_write" (fun ()->List.iter2(fun i vector->
                 let chunk=values.(i) in
                 Store.put_embedding ~snapshot:(snapshot chunk) store ~source:range.source ~room:range.room_id
                   ~key:(cache_key chunk) ~model:config.embedding_model ~content:chunk.content
                   ~at:(Unix.gettimeofday ()) ~version vector;
-                vectors.(i)<-Some vector) batch embedded;
+                vectors.(i)<-Some vector) batch embedded);
               progress (total-List.length rest) total;
               Lwt.pause () >>= fun ()->fill rest
              with Store.Stale_snapshot->Lwt.return(Error Llm.Source_changed)) in
-  fill missing
+  fill missing)
 
 let select ?corpus ~config ~store ~llm ~range ~version ~topic ~focus messages =
+  Telemetry.result ~error:Llm.error_name ~fields:["candidate_messages",`Int(List.length messages);
+    "query_bytes",`Int(String.length topic)] "retrieval" (fun ()->
   let messages=List.filter (in_range range) messages in
   let corpus=Option.value ~default:messages corpus in
   (* Index stable room windows once. Time/speaker filters restrict returned originals,
@@ -127,6 +132,7 @@ let select ?corpus ~config ~store ~llm ~range ~version ~topic ~focus messages =
   let selected_members chunk=List.filter(fun (m:message)->Hashtbl.mem permitted m.seq) chunk.members in
   let candidates=chunks corpus |> List.filter(fun chunk->selected_members chunk<>[]) in
   let lexical_fallback error =
+    Telemetry.emit "retrieval_fallback" ["reason",`String(Llm.error_name error);"method",`String "keyword"];
     let hits=candidates |> List.map(fun c->lexical topic (chunk_content(selected_members c)),c)
       |> List.filter(fun (s,_)->s>0.) |> List.sort(fun (a,_) (b,_)->Float.compare b a) |> take 12 in
     if hits=[] then Error error else Ok {messages=expand messages (List.concat_map(fun (_,c)->selected_members c) hits);
@@ -139,6 +145,7 @@ let select ?corpus ~config ~store ~llm ~range ~version ~topic ~focus messages =
       index ~config ~store ~llm ~range:corpus_range ~version corpus >|= (function
       | Error error->lexical_fallback error
       | Ok(values,vectors)->
+          Telemetry.sync ~fields:["chunks",`Int(Array.length values)] "vector_rank" (fun ()->
           let scored=Array.to_list(Array.mapi(fun i chunk->
             let eligible=selected_members chunk in
             let semantic=Option.bind vectors.(i) (cosine query_vector) |> Option.value ~default:(-1.) in
@@ -146,5 +153,5 @@ let select ?corpus ~config ~store ~llm ~range ~version ~topic ~focus messages =
             eligible,semantic,exact,0.8*.semantic+.0.2*.exact) values) in
           let hits=scored |> List.filter(fun (members,semantic,exact,_)->members<>[] && (semantic>=0.25 || exact>0.))
             |> List.sort(fun (_,_,_,a) (_,_,_,b)->Float.compare b a) |> take 12 in
-          Ok {messages=expand messages (List.concat_map(fun (members,_,_,_)->members) hits);note=None})
-  | Ok _->Lwt.return(Error(Llm.Bad_response {stage="retrieval";reason="invalid query embedding"}))
+          Ok {messages=expand messages (List.concat_map(fun (members,_,_,_)->members) hits);note=None}))
+  | Ok _->Lwt.return(Error(Llm.Bad_response {stage="retrieval";reason="invalid query embedding"})))

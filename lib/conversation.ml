@@ -77,7 +77,9 @@ let run ~config ~store ~llm ~name_messages ~request ~anchor ~reference ~history 
     else (incr calls;f () >>= function
       | Error(Llm.Bad_response _) when retry>0->call ~retry:(retry-1) f
       | result->Lwt.return result) in
-  let trace event fields = prerr_endline(Json_util.to_string (`Assoc
+  let trace event fields =
+    Telemetry.emit event fields;
+    prerr_endline(Json_util.to_string (`Assoc
     (["event",`String event;"request_seq",`String(Int64.to_string request.message.seq)]@fields))) in
   let people=participants store range "" in
   call (fun ()->Context_plan.plan ~llm ~request ~reference ~anchor ~people
@@ -108,6 +110,7 @@ let run ~config ~store ~llm ~name_messages ~request ~anchor ~reference ~history 
     r.Store.question.text ^ "\nFollow-up (takes priority): " ^ request.prompt in
   let notes=ref [] in
   let prepare messages =
+    Telemetry.result ~error:Llm.error_name "context_prepare" (fun ()->
     name_messages messages >>= fun messages ->
     let encoded=Context_window.size (`List(List.map Context_window.context messages)) in
     if encoded<=context_bytes then (remember messages;Lwt.return(Ok messages)) else
@@ -134,7 +137,7 @@ let run ~config ~store ~llm ~name_messages ~request ~anchor ~reference ~history 
               let size=Context_window.size (`List(!notes@facts)) in
               if size>context_bytes then Error(Llm.Limit_exceeded {
                 resource="context_notes_bytes";actual=Some size;limit=context_bytes})
-              else (notes:= !notes@facts;remember messages;Ok []) in
+              else (notes:= !notes@facts;remember messages;Ok [])) in
   let selection = match plan.mode with
     | Context_plan.Read_all -> Lwt.return(Ok(scoped,None))
     | Context_plan.Conversation -> Lwt.return(Ok(
@@ -208,7 +211,11 @@ unsupported claims, wrong periods, invented participant views, and answers to th
       "partial",`Bool(remaining<>[]);"available_count",`Int available;"returned_count",`Int(List.length messages);
       "next_after_id",(if remaining=[] then `Null else match List.rev messages with
         | m::_->`String(Int64.to_string m.seq) | []->`Null);"coverage",coverage ()] in
-  let execute name args = match name with
+  let tool_name name=if List.mem name ["read_messages";"search_messages";"find_participants";"get_message";"fetch_url";"respond"] then name else "unknown_tool" in
+  let safe_time key args=match Json_util.protect(fun ()->optional_time key args) with
+    | Ok(Some at)->`String(timestamp at) | _->`Null in
+  let execute name args =
+    Telemetry.result ~error:Llm.error_name ~fields:["tool",`String(tool_name name)] "tool" (fun ()->match name with
     | "fetch_url" -> Web_fetch.fetch (Json_util.required "url" args |> Json_util.string) >|= fun x->Ok x
     | "find_participants" ->
         let query=Json_util.required "query" args |> Json_util.string in
@@ -237,7 +244,7 @@ unsupported claims, wrong periods, invented participant views, and answers to th
         (match List.find_opt(fun (m:message)->Int64.to_string m.seq=id) scoped with
         | None->Lwt.return(Ok(`Assoc ["error",`String "Message unavailable in the requested room and scope"]))
         | Some m->remember [m];Lwt.return(Ok(`Assoc ["message",Context_window.context m])))
-    | _ -> Lwt.return(Ok(`Assoc ["error",`String "Unknown tool"])) in
+    | _ -> Lwt.return(Ok(`Assoc ["error",`String "Unknown tool"]))) in
   let rec finish revisions turns answer =
     let originals=visible () in
     let cited=List.filter (fun (m:message)->List.mem m.seq answer.Llm.answer_sources) originals in
@@ -304,9 +311,9 @@ unsupported claims, wrong periods, invented participant views, and answers to th
                   Lwt.catch (fun ()->execute name args)
                     (function Json_util.Invalid _ | Yojson.Json_error _->Lwt.return(Ok(`Assoc ["error",`String "Invalid tool arguments"])) | exn->Lwt.fail exn)
                   >>= function Error error->Lwt.return(Error error) | Ok result->
-                    trace "context_tool" ["tool",`String name;"coverage",coverage ();
-                      "start",Option.value ~default:`Null (Json_util.field "start" args);
-                      "end",Option.value ~default:`Null (Json_util.field "end" args)];
+                    trace "context_tool" ["tool",`String(tool_name name);"coverage",coverage ();
+                      "start",safe_time "start" args;
+                      "end",safe_time "end" args];
                     tool_result result)
         in handle [] tool_calls
   in loop 0 turns

@@ -35,6 +35,8 @@ let event db seq =
   `Assoc ["json",row;"msg",field "message" row;"sender",`String "앨리스"]
 
 let () =
+  let telemetry=ref [] in
+  Telemetry.sink := (fun event->telemetry:=event::!telemetry);
   let path=Filename.temp_file "asko-pipeline" ".sqlite" in
   let store=Store.open_ path in
   let fixture=Sqlite3.db_open ":memory:" in
@@ -304,6 +306,19 @@ let () =
         (Result.is_ok reconciled && (Option.get(Store.get_message store ~source:config.source_id ~seq:201L)).Types.deleted);
       check "source deletion invalidates stored summary evidence"
         (List.for_all (fun (o:Store.outgoing)->o.body="" && o.evidence=None) (Store.recent_outbox store));
+      let events= !telemetry in
+      let is value key event=Json_util.field key event=Some(`String value) in
+      check "model calls are timed inside job traces" (List.exists(fun event->
+        is "job" "kind" event && is "model_request" "stage" event && is "span_end" "event" event
+        && Json_util.field "job_id" event<>None && Json_util.field "total_tokens" event=Some(`Float 20.)) events);
+      check "missing provider costs remain unknown" (List.exists(fun event->
+        is "model_request" "stage" event && is "span_end" "event" event && Json_util.field "cost_usd" event=Some `Null) events);
+      check "delivery latency is correlated to its job" (List.exists(fun event->
+        is "delivery_attempt" "event" event && Json_util.field "job_id" event<>None
+        && Json_util.field "queue_to_send_ms" event<>None) events);
+      let serialized=Json_util.to_string (`List events) in
+      let contains needle=try ignore(Str.search_forward (Str.regexp_string needle) serialized 0);true with Not_found->false in
+      check "telemetry never logs chat text or authorization" (not(contains "not-a-real-key") && not(contains "최근 2시간 대화 정리해줘"));
       Lwt.return_unit)
       (fun () ->
         if Lwt.is_sleeping stop then Lwt.wakeup_later wake_stop ();
