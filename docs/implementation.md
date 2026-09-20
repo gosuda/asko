@@ -2,17 +2,23 @@
 
 ## Runtime
 
-Iris, the OCaml backend, SQLite, and Jina run on the phone. OpenRouter handles a conversational tool loop. Cohttp/Lwt provides HTTP and asynchronous workers. The model chooses how to respond and can read or search messages. OCaml enforces room, retention, and invocation boundaries on every lookup.
+Iris, the OCaml backend, and SQLite run on the phone. OpenRouter supplies embeddings and handles the conversational tool loop; local Jina is optional. Cohttp/Lwt provides HTTP and asynchronous workers. The model chooses how to respond and can read or search messages. OCaml enforces room, retention, and invocation boundaries on every lookup.
 
 Ingestion commits the message and its queued job in one transaction. Backfill resumes from a saved cursor and never executes historical commands. A serialized outbox checks delivery echoes. Interrupted sends remain uncertain until confirmed, preventing blind duplicate sends. Complete source scans reconcile edits and deletions; late events cannot restore deleted text. Active work checks the messages it actually read, including reply context, instead of a room-wide version. Nickname and mention metadata updates do not restart work. Embedding dependencies and answer evidence restrict invalidation to affected data; a changed unsent answer is requeued, and exhausted source retries produce a notice.
 
-Each turn starts with recent messages, reply context, and the previous response. `read_messages`, `search_messages`, and `get_message` expose original records; `respond` returns free-form text with optional source IDs. There is no intent classifier or summary-only rejection. Dates use RFC3339 tool arguments. The loop allows eight model turns within the existing token and time budgets. Valid citation IDs establish source membership, not whether every generated claim follows from the evidence.
+A context planner separates general conversation, topic lookup, and exhaustive reading without restricting which questions the assistant can answer. Explicit periods are resolved against the request's KST timestamp. Period summaries and participant-wide analysis read every stored original in the selected scope before answering. Large scopes are split into bounded batches, processed with up to three concurrent note requests, and synthesized from source-linked notes; an exhausted budget fails explicitly instead of silently skipping pages.
+
+Ordinary context reserves space for recent messages before adding bounded earlier evidence. An implicit previous exchange must belong to the same requester, have been delivered before the current request, and be at most 30 minutes old. The planner carries its question and answer forward only for a related follow-up. Explicit replies retain their anchor behavior.
+
+`read_messages`, `search_messages`, and `get_message` expose original records within the selected room and scope. Search returns relevant excerpts and explicitly describes its incomplete coverage; it does not replace a full-period read. The default budget is 64 model calls, including planning, batch notes, answer generation, and grounding checks. Structured preparation uses JSON Schema by default and retries a malformed model result once at the affected stage. All final answers, including plain-text model responses, pass a separate semantic grounding check with up to two correction attempts. This reduces unsupported claims but is not a proof of factual correctness.
+
+Source IDs remain private verification metadata. User-visible replies have no citation footers or evidence timestamps. Requested event chronology and useful URLs can still appear in the answer. Incomplete source synchronization keeps coverage incomplete even after every stored message is read, and answers must disclose that gap. Coverage counts, selected time bounds, tool names, and completion state are observable without recording message bodies or credentials in service logs.
 
 `fetch_url` reads public HTTP(S) links and returns a title, text, final URL, and truncation flag. It supports UTF-8 HTML, plain text, and JSON without running JavaScript. Each fetch allows 10 seconds, 2 MiB of downloaded content, 20,000 characters of text, and five redirects. Every destination's resolved addresses must be public; the connection uses a checked IP directly while retaining the hostname for HTTP and TLS. Loopback, private, link-local, and Tailscale addresses are blocked, including through redirects. Web content is treated as reference material, and answers using it should include the source URL.
 
 `daily_budget_tokens` reserves request UTF-8 bytes plus the output allowance before each OpenRouter call. Failed calls count too. This conservative limit is not a billing total. Retention, request expiry, cooldowns, and retry limits bound stored data and work.
 
-Reply length follows the request: simple answers can be short, while explanations and timelines can use multiple paragraphs. The default output allowance is 4,000 tokens plus the reasoning budget. Sent replies allow 12,000 UTF-8 bytes, with space reserved for the requester label and evidence timestamps. Answer validation and follow-up context use this configured limit.
+Reply length follows the request: simple answers can be short, while explanations and timelines can use multiple paragraphs. The default output allowance is 4,000 tokens plus the reasoning budget. Sent replies allow 12,000 UTF-8 bytes, with space reserved for the requester label. Answer validation and follow-up context use this configured limit.
 
 ## Validation record
 
@@ -46,8 +52,8 @@ defaults to 8,000,000 bytes when loading room history. These are byte limits, no
 model token limits; the provider's context limit still applies. Their configuration
 ceilings remain 2,000,000 and 16,000,000 bytes respectively.
 
-`max_tool_rounds` is configurable from 1 to 64 and defaults to 16 model calls per
-conversation, including the final answer. The overall `request_ttl` (300 seconds)
+`max_tool_rounds` is configurable from 1 to 64 and defaults to 64 model calls per
+conversation, including context planning, batch notes, and grounding checks. The overall `request_ttl` (300 seconds)
 and daily usage budget still apply. Existing explicit configuration values take
 precedence over the new defaults. On Android, edit `~/asko/config.local.json` and
 restart the service to apply overrides; deployment preserves this file.
@@ -66,3 +72,62 @@ specific codes. Terminal diagnostics receive a 60-second delivery grace period.
 Diagnostics deliberately omit credentials, raw request/response bodies, and
 exception arguments, which can contain chat text or secrets. Forward the diagnostic
 JSON when reporting a failure.
+
+### Iris synchronization diagnostics
+
+A failed history read or edit/deletion reconciliation is retained per room and operation until
+that operation succeeds. The next requested reply includes an `[asko diagnostic]` JSON block,
+even if a useful partial answer was generated. It contains the request/job ID, error ID,
+operation (`recovery` or `reconcile`), stage (`latest`, `page`, `decode_page`, `validate_page`,
+`watermark`, or `wait_lock`), endpoint, HTTP status when present, timeout setting, measured
+elapsed time, cursor, target sequence, page number, processed count, and observation time.
+The same error ID appears in `service.log`. Background errors are attached to requested replies,
+not posted as unsolicited periodic messages.
+
+A request deadline while waiting for the synchronization lock is reported as
+`iris_sync_deadline_exceeded` with `stage=wait_lock`, not as an HTTP timeout. Long answers
+reserve space for complete diagnostics; unusually small reply limits retain a compact error ID
+for log lookup. Error delivery does not wait for another Iris nickname lookup. Credentials,
+SQL bindings, and message contents are excluded. If Iris cannot send at all, diagnostics remain
+in the service log; using Iris for delivery cannot bypass an Iris outage.
+
+### Timing and API usage
+
+The service writes structured JSONL to `telemetry_path` (default
+`var/telemetry.jsonl`, relative to the config file). Set it to `""` to disable.
+`telemetry_max_bytes` defaults to 10 MiB per file and `telemetry_backups` to 3;
+rotation retains the current file plus `.1` through `.3`. Files are mode 0600,
+with a shared lock for service, replay and backfill writers. Logging failures do
+not cause an answer to be retried. Protect these files as operational metadata:
+they contain room IDs, job IDs, request sequence numbers, and provider generation IDs.
+They omit chat text, model prompts/answers, tool arguments, SQL bindings and credentials.
+
+Each job attempt has a `trace_id`, `job_id`, `request_seq`, and `attempt`.
+`span_start`/`span_end` pair by trace and span ID, with `parent_span_id` for
+nested and parallel work. Durations use CLOCK_MONOTONIC; UTC `at` timestamps
+allow correlation with service logs. Spans cover Iris lock wait/HTTP requests,
+history loading, context planning, full-history notes, chunk building, vector
+cache reads/writes, query/document embeddings, ranking, tools, answer generation,
+grounding audit and outbox enqueue. `model_request` includes model, request
+bytes, provider generation ID, tokens and API-reported cost when available.
+Missing usage/cost is null, not zero; failed and cancelled calls may still incur
+charges. This is separate from the conservative daily token reservation.
+
+`kind=job` measures one processing attempt, excluding queue wait and delivery.
+`queue_ms` measures time since its scheduled availability, while
+`request_age_ms` includes elapsed time since creation. `job_outcome.state`
+records the persisted job state (the trace itself can complete successfully
+while handling a job failure). Delivery has a separate trace sharing `job_id`;
+`delivery_attempt.queue_to_send_ms` measures creation to the start of Iris send,
+and `delivery_confirmed.since_send_ms` measures until the bot echo is observed.
+These wall-clock differences can be affected by system clock changes.
+Background recovery/reconciliation, replay and backfill have separate kinds.
+
+Run `python3 scripts/telemetry-report.py path/to/telemetry.jsonl*` for completed
+job spans, mean/p50/p95/max duration, errors/cancellations, and API cost subtotals.
+Use `--job-id 123` to inspect one job or `--kind all` to include background work,
+delivery and offline commands. The report deduplicates overlapping input files,
+skips malformed lines, and lists unknown cost counts. Nested and concurrent span
+durations overlap: never add the stage means to estimate end-to-end latency.
+Only completed spans contribute to aggregates; a killed process can leave an
+unmatched start event, so inspect raw logs when investigating a crash.

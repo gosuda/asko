@@ -54,7 +54,7 @@ Consecutive requests are queued with no default cooldown. The first configuratio
 
 ## Credentials and rooms
 
-Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. The default model is [Gemini 3.5 Flash Lite](https://openrouter.ai/google/gemini-3.5-flash-lite) with `reasoning_enabled=true`. A 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) is added to the response allowance. The conversation loop uses tool calling; `response_format` is used only by the older summary helpers.
+Put the OpenRouter key in `api_key` in the phone's `~/asko/config.local.json`. Keep the file mode at 600. The default model is [Gemini 3.5 Flash Lite](https://openrouter.ai/google/gemini-3.5-flash-lite) with `reasoning_enabled=true`. A 2,048-token [reasoning budget](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens) is added to the response allowance. The conversation loop uses tool calling; `response_format` is used for structured context planning, batch notes, and grounding checks.
 
 You can also keep the key in a separate file. From a Bash session on the phone:
 
@@ -104,7 +104,18 @@ Start with dry-run and inspect `./run-phone.sh outbox`. Set `dry_run=false` when
 
 ## Embeddings
 
-The default is `openai/text-embedding-3-small` at `https://openrouter.ai/api/v1`. It uses the same OpenRouter key as the chat model and sends up to 32 conversation chunks per request. Replies include a plain-text `@nickname` prefix for the requester; this does not create a KakaoTalk mention notification.
+The default is [Gemini Embedding 001](https://openrouter.ai/google/gemini-embedding-001) at `https://openrouter.ai/api/v1`, using 3,072 dimensions. It uses the existing OpenRouter key and up to 16 chunks per request. [OpenRouter input types](https://openrouter.ai/docs/api/api-reference/embeddings/submit-an-embedding-request) distinguish `search_document` from `search_query`. Replies include a plain-text `@nickname` prefix for the requester; this does not create a KakaoTalk mention notification.
+
+Embedding cache keys are separated by model. Chunks use stable message-ID windows, so appending messages does not shift completed windows. To backfill every retained message in every allowed room on the phone:
+
+```sh
+cd ~/asko
+./run-phone.sh backfill-embeddings --embedding-model google/gemini-embedding-001
+```
+
+The command reports room, snapshot boundary, message count, completed chunks, and total chunks. Completed chunks are committed incrementally and reused on reruns. Changing `embedding_model` in `config.local.json` and restarting activates the new model; an override only applies to that command. Old model caches are preserved for rollback.
+
+For a historical quality check without posting to KakaoTalk, use `./run-phone.sh replay-job --job-id ID`. This uses the configured models and can incur API charges. Its output includes the new answer and measured coverage; it never queues an outbox item.
 
 ### Optional local Jina
 
