@@ -53,6 +53,7 @@ let () =
   done;
   insert fixture ~seq:206 ~room:"1001" ~sender:"2001" ~at:(now-.30.) ~text:"/요약" ();
   insert fixture ~seq:207 ~room:"1002" ~sender:"2002" ~at:(now-.10.) ~text:"PRIVATE_ROOM_SHOULD_NEVER_LEAK" ();
+  let expected_embedding_auth=ref None in
   let chats=ref 0 and embeddings=ref 0 and deliveries=ref [] and contexts=ref [] in
   let bad_citation=ref false and backend_port=ref None in
   let fail_second_page=ref false and timeout_second_page=ref false in
@@ -69,7 +70,7 @@ let () =
     let config={Config.default with source_id="pipeline:1"; port=0; db_path=path;
       iris_url=base;openrouter_url=base^"/api/v1";embedding_url=base^"/api/v1";reasoning_enabled=false;bot_id="9999";rooms=["1001"];
       cooldown=0.;dry_run=false;response_format="json_object";recovery_interval=1.;send_interval=0.2;confirm_timeout=2.;
-      api_key="not-a-real-key";api_key_env="ASKO_PIPELINE_KEY";ingest_token_env="ASKO_PIPELINE_TOKEN";allow_insecure_loopback=true} in
+      api_key="not-a-real-key";api_key_embed="separate-embedding-key";api_key_env="ASKO_PIPELINE_KEY";ingest_token_env="ASKO_PIPELINE_TOKEN";allow_insecure_loopback=true} in
     Unix.putenv config.api_key_env ""; Unix.putenv config.ingest_token_env "test-ingress";
     let callback _ request body =
       Net.read_body ~limit:1048576 body >>= fun raw ->
@@ -98,8 +99,8 @@ let () =
           response (`Assoc ["success",`Bool true])
       | "/api/v1/embeddings" ->
           incr embeddings;
-          check "local embeddings never receive the OpenRouter key"
-            (Cohttp.Header.get (Cohttp.Request.headers request) "authorization"=None);
+          check "embedding request uses exactly the expected authentication"
+            (Cohttp.Header.get (Cohttp.Request.headers request) "authorization"= !expected_embedding_auth);
           let inputs=field "input" json |> Json_util.list Json_util.string in
           let data=List.mapi (fun index input ->
             let related=Retrieval.contains (String.lowercase_ascii input) "postgres" || Retrieval.contains input "MVCC" in
@@ -187,6 +188,16 @@ let () =
       let llm=Llm.create config store in
       Llm.embed llm ["postgres";"banana"] >>= fun vectors ->
       check "embedding response indices reordered correctly" (vectors=Ok [[|1.;0.|];[|0.;1.|]]);
+      expected_embedding_auth:=Some "Bearer separate-embedding-key";
+      Unix.putenv config.api_key_env "chat-environment-key";
+      let remote={config with embedding_url="https://openrouter.ai/api/v1"} in
+      Llm.embed (Llm.create remote store) ["postgres"] >>= fun remote_result ->
+      check "remote embeddings use their own key despite a chat environment override" (Result.is_ok remote_result);
+      Unix.putenv config.api_key_env "";
+      expected_embedding_auth:=Some "Bearer not-a-real-key";
+      Llm.embed (Llm.create {remote with api_key_embed=""} store) ["postgres"] >>= fun shared_result ->
+      check "remote embeddings retain shared-key compatibility" (Result.is_ok shared_result);
+      expected_embedding_auth:=None;
       let absent=Llm.create {config with api_key="";api_key_env="ASKO_ABSENT_KEY"} store in
       Unix.putenv "ASKO_ABSENT_KEY" "";
       Llm.embed absent ["x"] >>= fun absent_result ->

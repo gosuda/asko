@@ -30,6 +30,17 @@ let () =
   check "environment key overrides configuration key" (Config.api_key key_config=Some "fake-env-key");
   Unix.putenv key_config.api_key_env "";
   check "blank credentials are not configured" (Config.api_key {key_config with api_key="  "}=None);
+  let embed_config=Config.of_json (`Assoc ["api_key_embed",`String "  fake-embed-key  "]) |> Result.get_ok in
+  check "embedding configuration trims its separate key" (Config.api_key_embed embed_config=Some "fake-embed-key");
+  Unix.putenv key_config.api_key_env "fake-env-key";
+  check "chat environment key cannot override embedding key"
+    (Config.api_key_embed {key_config with api_key_embed=embed_config.api_key_embed}=Some "fake-embed-key");
+  check "omitted embedding key preserves shared-key configuration"
+    (Config.api_key_embed key_config=Some "fake-env-key");
+  check "blank embedding key preserves shared-key configuration"
+    (Config.api_key_embed {key_config with api_key_embed="  "}=Some "fake-env-key");
+  Unix.putenv key_config.api_key_env "";
+  check "embedding key must be a string" (Result.is_error (Config.of_json (`Assoc ["api_key_embed",`Int 7])));
   check "API key must be a string" (Result.is_error (Config.of_json (`Assoc ["api_key",`Int 7])));
   check "reasoning flag must be a boolean" (Result.is_error (Config.of_json (`Assoc ["reasoning_enabled",`String "false"])));
   check "unsupported output mode rejected" (Result.is_error (Config.of_json (`Assoc ["response_format",`String "text"])));

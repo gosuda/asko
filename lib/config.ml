@@ -31,6 +31,7 @@ type t = {
   embedding_model : string;
   embedding_url : string;
   api_key : string;
+  api_key_embed : string;
   api_key_env : string;
   ingest_token_env : string;
   allow_insecure_loopback : bool;
@@ -46,7 +47,7 @@ let default = {
   openrouter_url="https://openrouter.ai/api/v1";
   model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_schema";
   embedding_model="google/gemini-embedding-001"; embedding_url="https://openrouter.ai/api/v1";
-  api_key=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
+  api_key=""; api_key_embed=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
   allow_insecure_loopback=false;
 }
 
@@ -86,6 +87,7 @@ let of_json json = Json_util.protect (fun () ->
     embedding_url=s "embedding_url" d.embedding_url;
     response_format=s "response_format" d.response_format;
     api_key=String.trim (s "api_key" d.api_key);
+    api_key_embed=String.trim (s "api_key_embed" d.api_key_embed);
     api_key_env=s "api_key_env" d.api_key_env;
     ingest_token_env=s "ingest_token_env" d.ingest_token_env;
     allow_insecure_loopback=b "allow_insecure_loopback" d.allow_insecure_loopback;
@@ -141,6 +143,9 @@ let env_value name = match Sys.getenv_opt name with
 let api_key config = match env_value config.api_key_env with
   | Some _ as value -> value
   | None -> let value=String.trim config.api_key in if value="" then None else Some value
+let api_key_embed config =
+  let key=String.trim config.api_key_embed in
+  if key="" then api_key config else Some key
 let ingest_token config = env_value config.ingest_token_env
 let local_embeddings config =
   List.mem (Uri.host (Uri.of_string config.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"]

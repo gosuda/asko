@@ -47,7 +47,7 @@ let summary_schema = object_schema [
 ]
 
 let call t ~output_tokens ~path body =
-  match Config.api_key t.config with
+  match (if path="/embeddings" then Config.api_key_embed t.config else Config.api_key t.config) with
   | None -> Lwt.return (Error Not_configured)
   | Some key ->
       let size = String.length (Json_util.to_string body) in
