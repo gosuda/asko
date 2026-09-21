@@ -27,3 +27,7 @@ Start with [config.example.json](config.example.json). Enable the rooms you want
 Set `api_key_embed` to use a separate key for remote embeddings. When omitted or blank, embeddings use the chat API key. Local embeddings send no API key.
 
 See [implementation notes](docs/implementation.md) for conversation handling, recovery, and validation limits.
+
+For Gemini BYOK through OpenRouter, register your Google key in [OpenRouter BYOK settings](https://openrouter.ai/settings/integrations) and keep an OpenRouter key in `api_key`. Set `chat_provider_only` to `["google-ai-studio"]` for AI Studio or `["google-vertex"]` for Vertex. This restricts both tool and structured chat requests to that provider; embeddings keep their own key and routing. Omit the list or set it to `[]` to retain automatic provider selection.
+
+Provider selection alone does not guarantee BYOK-only billing. Disable shared-capacity fallback on the registered BYOK key in OpenRouter if you require it. Data-collection restrictions remain enabled, and OpenRouter key limits still need to permit the request. See [OpenRouter's BYOK documentation](https://openrouter.ai/docs/guides/overview/auth/byok).

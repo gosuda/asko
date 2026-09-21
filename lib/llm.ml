@@ -80,6 +80,11 @@ let call t ~output_tokens ~path body =
               Ok json)
       end
 
+let chat_provider config =
+  let fields = ["require_parameters",`Bool true;"data_collection",`String "deny"] in
+  `Assoc (fields @ if config.Config.chat_provider_only=[] then [] else
+    ["only",strings config.chat_provider_only;"allow_fallbacks",`Bool false])
+
 let turn t ~messages ~tools =
   Telemetry.result ~error:error_name "answer_generation" (fun ()->
   let output=t.config.max_output_tokens + (if t.config.reasoning_enabled then t.config.reasoning_max_tokens else 0) in
@@ -89,7 +94,7 @@ let turn t ~messages ~tools =
   let body=`Assoc ["model",`String t.config.model;"messages",`List messages;
     "tools",`List tools;"tool_choice",`String "auto";
     "max_tokens",`Int output;"reasoning",reasoning;
-    "provider",`Assoc ["require_parameters",`Bool true;"data_collection",`String "deny"]] in
+    "provider",chat_provider t.config] in
   call t ~output_tokens:output ~path:"/chat/completions" body >|= function
   | Error error->Error error
   | Ok json -> (match Json_util.protect (fun () ->
@@ -121,7 +126,7 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
   let body = `Assoc [
     "model", `String t.config.model; "stream", `Bool false;
     "max_tokens", `Int max_tokens; "reasoning", reasoning;
-    "provider", `Assoc ["require_parameters", `Bool true; "data_collection", `String "deny"];
+    "provider", chat_provider t.config;
     "messages", `List [
       `Assoc ["role",`String "system";"content",`String system];
       `Assoc ["role",`String "user";"content",`String (Json_util.to_string user)]];
