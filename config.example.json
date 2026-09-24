@@ -28,7 +28,8 @@
   "max_tool_rounds": 64,
   "max_response_bytes": 12000,
   "embedding_url": "https://openrouter.ai/api/v1",
-  "http_timeout": 120,
+  "http_timeout": 600,
+  "request_ttl": 1800,
   "cooldown": 0,
   "daily_budget_tokens": 50000000
 }

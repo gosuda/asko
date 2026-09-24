@@ -43,8 +43,8 @@ let default = {
   source_id="iris:phone:1"; port=8080; db_path="var/asko.sqlite";
   telemetry_path="var/telemetry.jsonl";telemetry_max_bytes=10485760;telemetry_backups=3;
   iris_url="http://127.0.0.1:3000"; bot_id=""; rooms=[];
-  dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=300.;
-  cooldown=0.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
+  dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=1800.;
+  cooldown=0.; http_timeout=600.; send_interval=1.; confirm_timeout=15.;
   max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=64; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
   openrouter_url="https://openrouter.ai/api/v1";
   chat_backend="openrouter"; chat_provider_only=[];
