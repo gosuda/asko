@@ -68,7 +68,7 @@ let () =
     let port=match Lwt_unix.getsockname socket with Unix.ADDR_INET(_,port)->port | _->assert false in
     let base=Printf.sprintf "http://127.0.0.1:%d" port in
     let config={Config.default with source_id="pipeline:1"; port=0; db_path=path;
-      iris_url=base;openrouter_url=base^"/api/v1";embedding_url=base^"/api/v1";reasoning_enabled=false;bot_id="9999";rooms=["1001"];
+      chat_provider_only=["google-ai-studio"];iris_url=base;openrouter_url=base^"/api/v1";embedding_url=base^"/api/v1";reasoning_enabled=false;bot_id="9999";rooms=["1001"];
       cooldown=0.;dry_run=false;response_format="json_object";recovery_interval=1.;send_interval=0.2;confirm_timeout=2.;
       api_key="not-a-real-key";api_key_embed="separate-embedding-key";api_key_env="ASKO_PIPELINE_KEY";ingest_token_env="ASKO_PIPELINE_TOKEN";allow_insecure_loopback=true} in
     Unix.putenv config.api_key_env ""; Unix.putenv config.ingest_token_env "test-ingress";
@@ -99,6 +99,9 @@ let () =
           response (`Assoc ["success",`Bool true])
       | "/api/v1/embeddings" ->
           incr embeddings;
+          check "chat routing does not affect embeddings"
+            (Json_util.field "provider" json=
+              if !expected_embedding_auth=None then None else Some (`Assoc ["data_collection",`String "deny"]));
           check "embedding request uses exactly the expected authentication"
             (Cohttp.Header.get (Cohttp.Request.headers request) "authorization"= !expected_embedding_auth);
           let inputs=field "input" json |> Json_util.list Json_util.string in
@@ -108,6 +111,12 @@ let () =
           response (`Assoc ["data",`List (List.rev data);"usage",`Assoc ["total_tokens",`Int 10]])
       | "/api/v1/chat/completions" ->
           incr chats;
+          let provider=field "provider" json in
+          check "chat stays on configured BYOK provider"
+            (field "only" provider=`List [`String "google-ai-studio"] &&
+             field "allow_fallbacks" provider=`Bool false &&
+             field "data_collection" provider=`String "deny" &&
+             field "require_parameters" provider=`Bool true);
           check "chat authentication uses configured key"
             (Cohttp.Header.get (Cohttp.Request.headers request) "authorization"=Some "Bearer not-a-real-key");
           check "configured model selected" (field "model" json=`String config.model);

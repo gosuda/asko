@@ -25,6 +25,7 @@ type t = {
   daily_budget_tokens : int;
   openrouter_url : string;
   model : string;
+  chat_provider_only : string list;
   reasoning_enabled : bool;
   reasoning_max_tokens : int;
   response_format : string;
@@ -45,6 +46,7 @@ let default = {
   cooldown=0.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
   max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=64; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
   openrouter_url="https://openrouter.ai/api/v1";
+  chat_provider_only=[];
   model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_schema";
   embedding_model="google/gemini-embedding-001"; embedding_url="https://openrouter.ai/api/v1";
   api_key=""; api_key_embed=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
@@ -81,6 +83,7 @@ let of_json json = Json_util.protect (fun () ->
     max_output_tokens=i "max_output_tokens" d.max_output_tokens;
     daily_budget_tokens=i "daily_budget_tokens" d.daily_budget_tokens;
     openrouter_url=s "openrouter_url" d.openrouter_url;
+    chat_provider_only=strings "chat_provider_only" d.chat_provider_only;
     model=s "model" d.model; embedding_model=s "embedding_model" d.embedding_model;
     reasoning_enabled=b "reasoning_enabled" d.reasoning_enabled;
     reasoning_max_tokens=i "reasoning_max_tokens" d.reasoning_max_tokens;
@@ -92,6 +95,8 @@ let of_json json = Json_util.protect (fun () ->
     ingest_token_env=s "ingest_token_env" d.ingest_token_env;
     allow_insecure_loopback=b "allow_insecure_loopback" d.allow_insecure_loopback;
   } in
+  if List.exists (fun provider -> String.trim provider="" || String.trim provider<>provider) c.chat_provider_only
+  then invalid "chat_provider_only must contain nonblank provider slugs without surrounding whitespace";
   if c.port < 1024 || c.port > 65535 then invalid "port must be 1024..65535";
   if c.source_id = "" || c.db_path = "" then invalid "source_id and db_path are required";
   if c.telemetry_max_bytes<4096 || c.telemetry_max_bytes>104857600 || c.telemetry_backups<1 || c.telemetry_backups>10

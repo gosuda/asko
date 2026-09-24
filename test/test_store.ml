@@ -44,6 +44,13 @@ let () =
   check "API key must be a string" (Result.is_error (Config.of_json (`Assoc ["api_key",`Int 7])));
   check "reasoning flag must be a boolean" (Result.is_error (Config.of_json (`Assoc ["reasoning_enabled",`String "false"])));
   check "unsupported output mode rejected" (Result.is_error (Config.of_json (`Assoc ["response_format",`String "text"])));
+  check "chat provider routing remains optional" (Config.default.chat_provider_only=[]);
+  check "chat provider list parsed"
+    ((Config.of_json (`Assoc ["chat_provider_only",`List [`String "google-vertex"]]) |> Result.get_ok).chat_provider_only=["google-vertex"]);
+  check "empty provider slug rejected"
+    (Result.is_error (Config.of_json (`Assoc ["chat_provider_only",`List [`String " "]])));
+  check "provider routing must be a list"
+    (Result.is_error (Config.of_json (`Assoc ["chat_provider_only",`String "google-ai-studio"])));
   let check_followup cooldown =
     let db=Store.open_ ":memory:" in
     Fun.protect ~finally:(fun ()->Store.close db) (fun () ->

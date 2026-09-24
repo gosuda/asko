@@ -12,6 +12,7 @@
   "retention_days": 7,
   "openrouter_url": "https://openrouter.ai/api/v1",
   "model": "google/gemini-3.5-flash-lite",
+  "chat_provider_only": ["google-ai-studio"],
   "reasoning_enabled": true,
   "response_format": "json_schema",
   "embedding_model": "google/gemini-embedding-001",
