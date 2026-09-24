@@ -24,10 +24,12 @@ KakaoTalk integration uses [Iris](https://github.com/dolidolih/Iris). See [Andro
 
 Start with [config.example.json](config.example.json). Enable the rooms you want the bot to use, add your API key, and turn off `dry_run` when ready to send replies. Model calls can still incur charges in dry-run mode. Keep keys in your local configuration, outside Git.
 
-Set `api_key_embed` to use a separate key for remote embeddings. When omitted or blank, embeddings use the chat API key. Local embeddings send no API key.
+The example uses OpenCode Go with `mimo-v2.6-flash`. Set `chat_backend` to `opencode_go`, `openrouter_url` (the legacy chat endpoint field) to `https://opencode.ai/zen/go/v1`, and supply your Go key in `api_key` or `OPENCODE_GO_API_KEY`. MiMo uses `thinking` for reasoning and `json_object` for structured replies, which are validated locally. Requests identify as asko and send a stable session ID per room. See [Go API requirements](https://opencode.ai/docs/go/#where-can-i-use-it).
+
+Set `api_key_embed` to your existing embedding provider key. Remote embeddings use `embedding_url` independently of chat; a different remote endpoint requires a separate key. Shared-key fallback is available only when both endpoints match. Local embeddings send no API key.
 
 See [implementation notes](docs/implementation.md) for conversation handling, recovery, and validation limits.
 
-For Gemini BYOK through OpenRouter, register your Google key in [OpenRouter BYOK settings](https://openrouter.ai/settings/integrations) and keep an OpenRouter key in `api_key`. Set `chat_provider_only` to `["google-ai-studio"]` for AI Studio or `["google-vertex"]` for Vertex. This restricts both tool and structured chat requests to that provider; embeddings keep their own key and routing. Omit the list or set it to `[]` to retain automatic provider selection.
+Older configurations default to `chat_backend: "openrouter"`. For Gemini BYOK through OpenRouter, register your Google key in [OpenRouter BYOK settings](https://openrouter.ai/settings/integrations) and keep an OpenRouter key in `api_key`. Set `chat_provider_only` to `["google-ai-studio"]` for AI Studio or `["google-vertex"]` for Vertex. This restricts both tool and structured chat requests to that provider; embeddings keep their own key and routing. Omit the list or set it to `[]` to retain automatic provider selection.
 
 Provider selection alone does not guarantee BYOK-only billing. Disable shared-capacity fallback on the registered BYOK key in OpenRouter if you require it. Data-collection restrictions remain enabled, and OpenRouter key limits still need to permit the request. See [OpenRouter's BYOK documentation](https://openrouter.ai/docs/guides/overview/auth/byok).

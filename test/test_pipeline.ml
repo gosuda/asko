@@ -199,12 +199,15 @@ let () =
       check "embedding response indices reordered correctly" (vectors=Ok [[|1.;0.|];[|0.;1.|]]);
       expected_embedding_auth:=Some "Bearer separate-embedding-key";
       Unix.putenv config.api_key_env "chat-environment-key";
-      let remote={config with embedding_url="https://openrouter.ai/api/v1"} in
-      Llm.embed (Llm.create remote store) ["postgres"] >>= fun remote_result ->
+      let remote=config in
+      let remote_embed config = Llm.call (Llm.create config store) ~output_tokens:0 ~path:"/embeddings"
+        (`Assoc ["model",`String config.embedding_model;"input",`List [`String "postgres"];
+          "provider",`Assoc ["data_collection",`String "deny"]]) in
+      remote_embed remote >>= fun remote_result ->
       check "remote embeddings use their own key despite a chat environment override" (Result.is_ok remote_result);
       Unix.putenv config.api_key_env "";
       expected_embedding_auth:=Some "Bearer not-a-real-key";
-      Llm.embed (Llm.create {remote with api_key_embed=""} store) ["postgres"] >>= fun shared_result ->
+      remote_embed {remote with api_key_embed=""} >>= fun shared_result ->
       check "remote embeddings retain shared-key compatibility" (Result.is_ok shared_result);
       expected_embedding_auth:=None;
       let absent=Llm.create {config with api_key="";api_key_env="ASKO_ABSENT_KEY"} store in

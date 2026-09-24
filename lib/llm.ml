@@ -9,8 +9,9 @@ type conclusion = Agreed | Disputed | Undecided | Not_requested
 type bullet = { text : string; sources : int64 list }
 type summary = { bullets : bullet list; conclusion : conclusion }
 type answer = { answer_text : string; answer_sources : int64 list }
-type t = { config : Config.t; store : Store.t }
-let create config store = {config; store}
+type t = { config : Config.t; store : Store.t; session : string }
+let create config store = {config; store; session="asko-" ^ Digest.to_hex (Digest.string config.Config.source_id)}
+let for_conversation t id = {t with session="asko-" ^ Digest.to_hex (Digest.string (t.config.source_id ^ ":" ^ id))}
 let error_name = function
   | Not_configured -> "model_not_configured" | Network error -> Net.error_name error
   | Bad_response _ -> "model_invalid_response"
@@ -68,8 +69,12 @@ let call t ~output_tokens ~path body =
           ~describe:(function
             | Error error->Telemetry.result_fields error_name (Error error)
             | Ok json->Telemetry.usage_fields json) "model_request" (fun ()->
-          Net.json ~headers:["authorization","Bearer " ^ key] ~body
-            ~timeout:t.config.http_timeout `POST (Net.endpoint t.config.openrouter_url path)
+          let headers=["authorization","Bearer " ^ key] @
+            (if path<>"/embeddings" && t.config.chat_backend="opencode_go" then
+              ["x-opencode-session",t.session] else []) in
+          let base=if path="/embeddings" then t.config.embedding_url else t.config.openrouter_url in
+          Net.json ~headers ~body
+            ~timeout:t.config.http_timeout `POST (Net.endpoint base path)
           >|= function
           | Error error -> Error (Network error)
           | Ok json ->
@@ -85,6 +90,11 @@ let chat_provider config =
   `Assoc (fields @ if config.Config.chat_provider_only=[] then [] else
     ["only",strings config.chat_provider_only;"allow_fallbacks",`Bool false])
 
+let chat_options config reasoning =
+  if config.Config.chat_backend="opencode_go" then
+    ["thinking",`Assoc ["type",`String (if config.reasoning_enabled then "enabled" else "disabled")]]
+  else ["reasoning",reasoning;"provider",chat_provider config]
+
 let turn t ~messages ~tools =
   Telemetry.result ~error:error_name "answer_generation" (fun ()->
   let output=t.config.max_output_tokens + (if t.config.reasoning_enabled then t.config.reasoning_max_tokens else 0) in
@@ -93,8 +103,8 @@ let turn t ~messages ~tools =
     else `Assoc ["enabled",`Bool false] in
   let body=`Assoc ["model",`String t.config.model;"messages",`List messages;
     "tools",`List tools;"tool_choice",`String "auto";
-    "max_tokens",`Int output;"reasoning",reasoning;
-    "provider",chat_provider t.config] in
+    "max_tokens",`Int output] in
+  let body=`Assoc (Json_util.object_ body @ chat_options t.config reasoning) in
   call t ~output_tokens:output ~path:"/chat/completions" body >|= function
   | Error error->Error error
   | Ok json -> (match Json_util.protect (fun () ->
@@ -125,13 +135,13 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
       "name",`String name;"strict",`Bool true;"schema",schema]] in
   let body = `Assoc [
     "model", `String t.config.model; "stream", `Bool false;
-    "max_tokens", `Int max_tokens; "reasoning", reasoning;
-    "provider", chat_provider t.config;
+    "max_tokens", `Int max_tokens;
     "messages", `List [
       `Assoc ["role",`String "system";"content",`String system];
       `Assoc ["role",`String "user";"content",`String (Json_util.to_string user)]];
     "response_format", response_format;
   ] in
+  let body=`Assoc (Json_util.object_ body @ chat_options t.config reasoning) in
   call t ~output_tokens:max_tokens ~path:"/chat/completions" body >|= function
   | Error error -> Error error
   | Ok json ->

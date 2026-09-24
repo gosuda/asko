@@ -25,6 +25,7 @@ type t = {
   daily_budget_tokens : int;
   openrouter_url : string;
   model : string;
+  chat_backend : string;
   chat_provider_only : string list;
   reasoning_enabled : bool;
   reasoning_max_tokens : int;
@@ -46,7 +47,7 @@ let default = {
   cooldown=0.; http_timeout=120.; send_interval=1.; confirm_timeout=15.;
   max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=64; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
   openrouter_url="https://openrouter.ai/api/v1";
-  chat_provider_only=[];
+  chat_backend="openrouter"; chat_provider_only=[];
   model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_schema";
   embedding_model="google/gemini-embedding-001"; embedding_url="https://openrouter.ai/api/v1";
   api_key=""; api_key_embed=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
@@ -83,6 +84,7 @@ let of_json json = Json_util.protect (fun () ->
     max_output_tokens=i "max_output_tokens" d.max_output_tokens;
     daily_budget_tokens=i "daily_budget_tokens" d.daily_budget_tokens;
     openrouter_url=s "openrouter_url" d.openrouter_url;
+    chat_backend=s "chat_backend" d.chat_backend;
     chat_provider_only=strings "chat_provider_only" d.chat_provider_only;
     model=s "model" d.model; embedding_model=s "embedding_model" d.embedding_model;
     reasoning_enabled=b "reasoning_enabled" d.reasoning_enabled;
@@ -121,14 +123,17 @@ let of_json json = Json_util.protect (fun () ->
     let scheme = Uri.scheme uri in
     if host = None || Uri.userinfo uri <> None || Uri.query uri <> [] || Uri.fragment uri <> None
        || not (scheme = Some "https" || (scheme = Some "http" && (not https || (loopback && c.allow_insecure_loopback))))
-    then invalid "invalid API URL (HTTPS required for OpenRouter)"
+    then invalid "invalid API URL (HTTPS required for remote APIs)"
   in
   valid_url ~https:false c.iris_url;
   valid_url ~https:true c.openrouter_url;
-  valid_url ~https:false c.embedding_url;
+  let local_embed=List.mem (Uri.host (Uri.of_string c.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"] in
+  valid_url ~https:(not local_embed) c.embedding_url;
+  if not (List.mem c.chat_backend ["openrouter";"opencode_go"]) then invalid "invalid chat_backend";
   if not (List.mem (Uri.host (Uri.of_string c.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"])
      && c.embedding_url<>c.openrouter_url
-  then invalid "embedding_url must be local or match openrouter_url";
+     && String.trim c.api_key_embed=""
+  then invalid "separate remote embedding endpoint requires api_key_embed";
   if not c.dry_run && (c.bot_id = "" || c.bot_id = "0") then invalid "bot_id is required before live delivery";
   c)
 
@@ -150,7 +155,8 @@ let api_key config = match env_value config.api_key_env with
   | None -> let value=String.trim config.api_key in if value="" then None else Some value
 let api_key_embed config =
   let key=String.trim config.api_key_embed in
-  if key="" then api_key config else Some key
+  if key<>"" then Some key
+  else if config.embedding_url=config.openrouter_url then api_key config else None
 let ingest_token config = env_value config.ingest_token_env
 let local_embeddings config =
   List.mem (Uri.host (Uri.of_string config.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"]
