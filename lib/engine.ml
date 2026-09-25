@@ -174,7 +174,7 @@ let process_job_body t (job:Store.job) =
         |> Store.with_speaker_names t.store ~source:request.source ~room:request.room_id) in
       Telemetry.emit "history_loaded" ["message_count",`Int(List.length history)];
       let version=Store.room_version t.store ~source:request.source ~room:request.room_id in
-      Conversation.run ~config:t.config ~store:t.store ~llm:t.llm ~name_messages:(speaker_names t)
+      Conversation.run ~config:t.config ~store:t.store ~llm:(Llm.for_conversation t.llm request.room_id) ~name_messages:(speaker_names t)
         ~request:job.invocation ~anchor ~reference ~history ~range ~version >>= function
       | Error error -> failed t ~sync_errors:!request_sync_errors job error
       | Ok {Conversation.answer;evidence_messages;input_messages;coverage} ->
