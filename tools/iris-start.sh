@@ -35,12 +35,20 @@ for asko_filter in /system/bin/iptables /system/bin/ip6tables; do
                asko_fail 'Cannot block external access to Iris.';;
     esac
     asko_first=$("$asko_filter" -w 5 -S OUTPUT | sed -n '2p') || asko_fail 'Cannot inspect the Iris firewall.'
-    asko_expected="-A OUTPUT -o lo -p tcp -m tcp --dport 3000 -m owner ! --uid-owner $asko_uid -j REJECT"
+    # TIME_WAIT ACKs and other kernel-generated TCP replies have no owning socket.
+    # Reject only packets with a socket owned by another UID, or normal teardown
+    # is blocked and Iris connections accumulate in LAST_ACK until they time out.
+    asko_expected="-A OUTPUT -o lo -p tcp -m tcp --dport 3000 -m owner --socket-exists ! --uid-owner $asko_uid -j REJECT"
     case "$asko_first" in
         "$asko_expected"|"$asko_expected --reject-with "*) ;;
-        *) "$asko_filter" -w 5 -I OUTPUT 1 -o lo -p tcp --dport 3000 -m owner ! --uid-owner "$asko_uid" -j REJECT ||
+        *) "$asko_filter" -w 5 -I OUTPUT 1 -o lo -p tcp --dport 3000 -m owner --socket-exists ! --uid-owner "$asko_uid" -j REJECT ||
                asko_fail 'Cannot block other apps from the Iris API.';;
     esac
+    # Install the replacement before removing all copies of our old rule.
+    while "$asko_filter" -w 5 -C OUTPUT -o lo -p tcp --dport 3000 -m owner ! --uid-owner "$asko_uid" -j REJECT 2>/dev/null; do
+        "$asko_filter" -w 5 -D OUTPUT -o lo -p tcp --dport 3000 -m owner ! --uid-owner "$asko_uid" -j REJECT ||
+            asko_fail 'Cannot replace the old Iris firewall rule.'
+    done
 done
 if [ ! -f config.json ]; then
     printf '%s\n' '{"botName":"Iris","botHttpPort":3000,"webServerEndpoint":"","dbPollingRate":1000,"messageSendRate":1000,"botId":0}' >config.json
