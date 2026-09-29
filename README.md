@@ -24,7 +24,9 @@ KakaoTalk integration uses [Iris](https://github.com/dolidolih/Iris). See [Andro
 
 Start with [config.example.json](config.example.json). Enable the rooms you want the bot to use, add your API key, and turn off `dry_run` when ready to send replies. Model calls can still incur charges in dry-run mode. Keep keys in your local configuration, outside Git.
 
-The example uses OpenCode Go with `mimo-v2.6-flash`. Set `chat_backend` to `opencode_go`, `openrouter_url` (the legacy chat endpoint field) to `https://opencode.ai/zen/go/v1`, and supply your Go key in `api_key` or `OPENCODE_GO_API_KEY`. MiMo uses `thinking` for reasoning and `json_object` for structured replies, which are validated locally. Requests identify as asko and send a stable session ID per room. See [Go API requirements](https://opencode.ai/docs/go/#where-can-i-use-it).
+The example uses OpenCode Go with `mimo-v2.6-pro`. Set `chat_backend` to `opencode_go`, `openrouter_url` (the legacy chat endpoint field) to `https://opencode.ai/zen/go/v1`, and supply your Go key in `api_key` or `OPENCODE_GO_API_KEY`. MiMo uses `thinking` for reasoning and `json_object` for structured replies, which are validated locally. Requests identify as asko and send a stable session ID per room. See [Go API requirements](https://opencode.ai/docs/go/#where-can-i-use-it).
+
+The example allows 16,000 output tokens plus 8,192 tokens of reasoning headroom (24,192 total for answers and context notes). MiMo shares this total between thinking and the final response; `reasoning_max_tokens` adds headroom but does not enforce a separate thinking limit. Context planning and answer auditing use smaller task-specific output budgets with the same reasoning headroom.
 
 Set `api_key_embed` to your existing embedding provider key. Remote embeddings use `embedding_url` independently of chat; a different remote endpoint requires a separate key. Shared-key fallback is available only when both endpoints match. Local embeddings send no API key.
 
