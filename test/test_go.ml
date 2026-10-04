@@ -10,6 +10,14 @@ let () =
     (Result.is_ok (Config.of_json (`Assoc ["embedding_url",`String "https://example.org/v1";"api_key_embed",`String "key"])));
   check "invalid backend rejected"
     (Result.is_error (Config.of_json (`Assoc ["chat_backend",`String "typo"])));
+  let glm_fields=["chat_backend",`String "opencode_go";"model",`String "glm-5.3-flash";
+    "response_format",`String "json_object"] in
+  check "GLM Go JSON configuration accepted" (Result.is_ok(Config.of_json (`Assoc glm_fields)));
+  check "GLM cannot silently disable required thinking"
+    (Result.is_error(Config.of_json (`Assoc (glm_fields@["reasoning_enabled",`Bool false]))));
+  check "GLM cannot silently accept an unsupported JSON Schema mode"
+    (Result.is_error(Config.of_json (`Assoc (List.remove_assoc "response_format" glm_fields@[
+      "response_format",`String "json_schema"]))));
   let store=Store.open_ ":memory:" in
   Fun.protect ~finally:(fun ()->Store.close store) (fun ()->Lwt_main.run (
     let socket=Lwt_unix.socket Unix.PF_INET Unix.SOCK_STREAM 0 in
@@ -27,7 +35,7 @@ let () =
     check "session stable" (llm.session=(Llm.for_conversation llm "room-1").session);
     check "never leak Go key to separate embedding endpoint"
       (Config.api_key_embed {config with api_key_embed=""}=None);
-    let seen=ref [] in
+    let seen=ref [] and glm=ref false in
     let callback _ request body =
       Cohttp_lwt.Body.to_string body >>= fun body->
       let json=Yojson.Safe.from_string body in
@@ -38,7 +46,15 @@ let () =
         check "chat key" (Cohttp.Header.get headers "authorization"=Some "Bearer go-key");
         check "session header" (Cohttp.Header.get headers "x-opencode-session"=Some llm.session);
         check "Go excludes router fields" (Json_util.field "provider" json=None && Json_util.field "reasoning" json=None);
-        check "MiMo thinking flag" (Json_util.field "thinking" json=Some (`Assoc ["type",`String "disabled"]))
+        if !glm then begin
+          check "GLM model selected" (Json_util.field "model" json=Some(`String "glm-5.3-flash"));
+          check "GLM retains required thinking across tool turns"
+            (Json_util.field "thinking" json=Some(`Assoc ["type",`String "enabled";"clear_thinking",`Bool false]));
+          if Json_util.field "response_format" json<>None then
+            check "GLM uses supported JSON object mode"
+              (Json_util.field "response_format" json=Some(`Assoc ["type",`String "json_object"]))
+        end else
+          check "MiMo thinking flag" (Json_util.field "thinking" json=Some (`Assoc ["type",`String "disabled"]))
       end else begin
         check "embedding endpoint" (path="/embed/embeddings");
         check "embedding key" (Cohttp.Header.get headers "authorization"=Some "Bearer embed-key");
@@ -57,5 +73,11 @@ let () =
       Llm.call llm ~output_tokens:0 ~path:"/embeddings" (`Assoc ["model",`String "embed"]) >>= fun embed->
       check "embedding route works" (Result.is_ok embed);
       check "all paths tested" (List.length !seen=3);
+      glm:=true;
+      let glm_llm={llm with config={config with model="glm-5.3-flash";reasoning_enabled=true}} in
+      Llm.turn glm_llm ~messages:[] ~tools:[] >>= fun turn->
+      check "GLM tool turn works" (Result.is_ok turn);
+      Llm.chat glm_llm ~name:"probe" ~schema:(`Assoc []) ~system:"Return JSON" ~user:(`Assoc []) ~max_tokens:64 >>= fun chat->
+      check "GLM structured reply works" (chat=Ok (`Assoc ["ok",`Bool true]));
       Lwt.return_unit)
       (fun ()->Lwt.wakeup_later wake ();server)))

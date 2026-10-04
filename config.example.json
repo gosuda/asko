@@ -12,7 +12,7 @@
   "retention_days": 7,
   "chat_backend": "opencode_go",
   "openrouter_url": "https://opencode.ai/zen/go/v1",
-  "model": "mimo-v2.6-pro",
+  "model": "glm-5.3-flash",
   "chat_provider_only": [],
   "reasoning_enabled": true,
   "response_format": "json_object",

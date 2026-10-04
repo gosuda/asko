@@ -92,7 +92,9 @@ let chat_provider config =
 
 let chat_options config reasoning =
   if config.Config.chat_backend="opencode_go" then
-    ["thinking",`Assoc ["type",`String (if config.reasoning_enabled then "enabled" else "disabled")]]
+    let fields=["type",`String (if config.reasoning_enabled then "enabled" else "disabled")] in
+    (* GLM tool turns retain the unmodified reasoning_content carried by turn. *)
+    ["thinking",`Assoc (fields @ if Config.go_glm config then ["clear_thinking",`Bool false] else [])]
   else ["reasoning",reasoning;"provider",chat_provider config]
 
 let turn t ~messages ~tools =
