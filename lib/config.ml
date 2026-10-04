@@ -54,6 +54,9 @@ let default = {
   allow_insecure_loopback=false;
 }
 
+let go_glm config =
+  config.chat_backend="opencode_go" && List.mem config.model ["glm-5.3";"glm-5.3-flash"]
+
 let of_json json = Json_util.protect (fun () ->
   let d = default in
   let open Json_util in
@@ -106,6 +109,8 @@ let of_json json = Json_util.protect (fun () ->
   if c.reasoning_max_tokens < 128 || c.reasoning_max_tokens > 8192 then invalid "reasoning_max_tokens must be 128..8192";
   if not (List.mem c.response_format ["json_object"; "json_schema"])
   then invalid "response_format must be json_object or json_schema";
+  if go_glm c && (not c.reasoning_enabled || c.response_format<>"json_object")
+  then invalid "GLM-5.3 on OpenCode Go requires reasoning_enabled=true and response_format=json_object";
   if c.retention_days < 1 || c.retention_days > 90 then invalid "retention_days must be 1..90";
   if c.request_ttl <= 0. || c.http_timeout <= 0. || c.recovery_interval < 1. || c.reconcile_interval < 60.
      || c.send_interval < 0.2 || c.cooldown < 0. || c.confirm_timeout <= 0.

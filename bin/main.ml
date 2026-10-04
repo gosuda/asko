@@ -197,13 +197,33 @@ let () =
           "embedding_model", `String c.embedding_model; "embedding_url", `String c.embedding_url;
           "response_format", `String c.response_format; "api_key_present", `Bool (Config.api_key c <> None);
           "ingest_token_present", `Bool (Config.ingest_token c <> None)]))
+    | "probe-chat" ->
+        let config=get_config () in
+        let store=Store.open_ ":memory:" in
+        Fun.protect ~finally:(fun ()->Store.close store) (fun ()->
+          let llm=Llm.for_conversation (Llm.create config store) "configuration-probe" in
+          let schema=Llm.object_schema ["ok",`Assoc ["type",`String "boolean"]] in
+          let started=Telemetry.now () in
+          match Lwt_main.run (Llm.chat llm ~name:"asko_probe" ~schema
+            ~system:"Return exactly the JSON object {\"ok\":true}, with no additional fields."
+            ~user:(`Assoc ["check",`String "synthetic configuration probe"]) ~max_tokens:128) with
+          | Error error->die (Json_util.to_string (Llm.error_details error))
+          | Ok json->
+              (match Json_util.protect(fun ()->
+                Llm.reject_extra ["ok"] json;
+                if Json_util.required "ok" json |> Json_util.bool |> not then
+                  Json_util.invalid "probe did not return ok=true") with
+               | Error _->die "model_probe_invalid_response"
+               | Ok ()->print_endline (Json_util.to_string (`Assoc ["chat",`Bool true;
+                   "json_valid",`Bool true;"model",`String config.model;
+                   "duration_ms",Telemetry.ms(Telemetry.now ()-.started)]))))
     | "probe-https" ->
         let uri = Uri.of_string "https://openrouter.ai/api/v1/models" in
         (match Lwt_main.run (Net.request ~limit:8388608 ~timeout:30. `GET uri) with
          | Ok (200, body) -> Printf.printf "{\"https\":true,\"status\":200,\"bytes\":%d}\n" (String.length body)
          | Ok (status, _) -> die ("HTTPS probe status " ^ string_of_int status)
          | Error error -> die ("HTTPS probe failed: " ^ Net.error_name error))
-    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backfill-embeddings | replay-job --job-id ID | backup --output path | probe-https | version [--config path]"
+    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backfill-embeddings | replay-job --job-id ID | backup --output path | probe-chat | probe-https | version [--config path]"
   with
   | Store.Error error -> die ("database error: " ^ error)
   | Sys_error _ -> die "filesystem operation failed"
