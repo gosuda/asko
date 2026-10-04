@@ -13,8 +13,8 @@ let () =
   let glm_fields=["chat_backend",`String "opencode_go";"model",`String "glm-5.3-flash";
     "response_format",`String "json_object"] in
   check "GLM Go JSON configuration accepted" (Result.is_ok(Config.of_json (`Assoc glm_fields)));
-  check "GLM cannot silently disable required thinking"
-    (Result.is_error(Config.of_json (`Assoc (glm_fields@["reasoning_enabled",`Bool false]))));
+  check "GLM accepts no extra reasoning headroom"
+    (Result.is_ok(Config.of_json (`Assoc (glm_fields@["reasoning_enabled",`Bool false]))));
   check "GLM cannot silently accept an unsupported JSON Schema mode"
     (Result.is_error(Config.of_json (`Assoc (List.remove_assoc "response_format" glm_fields@[
       "response_format",`String "json_schema"]))));
@@ -48,8 +48,8 @@ let () =
         check "Go excludes router fields" (Json_util.field "provider" json=None && Json_util.field "reasoning" json=None);
         if !glm then begin
           check "GLM model selected" (Json_util.field "model" json=Some(`String "glm-5.3-flash"));
-          check "GLM retains required thinking across tool turns"
-            (Json_util.field "thinking" json=Some(`Assoc ["type",`String "enabled";"clear_thinking",`Bool false]));
+          check "GLM omits unsupported thinking field"
+            (Json_util.field "thinking" json=None);
           if Json_util.field "response_format" json<>None then
             check "GLM uses supported JSON object mode"
               (Json_util.field "response_format" json=Some(`Assoc ["type",`String "json_object"]))
