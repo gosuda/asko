@@ -19,7 +19,9 @@ let error_name = function
   | Source_changed -> "used_source_changed"
   | Limit_exceeded {resource;_} -> resource ^ "_exceeded"
   | Internal_error _ -> "internal_error"
-let retryable = function Network error -> Net.retryable error | Bad_response _ | Internal_error _ -> true | _ -> false
+let retryable = function
+  | Bad_response {stage="context_notes";_}->false (* The batch has its own bounded retries. *)
+  | Network error -> Net.retryable error | Bad_response _ | Internal_error _ -> true | _ -> false
 
 let error_details error =
   let fields = match error with

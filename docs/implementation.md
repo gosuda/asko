@@ -52,11 +52,25 @@ defaults to 8,000,000 bytes when loading room history. These are byte limits, no
 model token limits; the provider's context limit still applies. Their configuration
 ceilings remain 2,000,000 and 16,000,000 bytes respectively.
 
-`max_tool_rounds` is configurable from 1 to 64 and defaults to 64 model calls per
-conversation, including context planning, batch notes, and grounding checks. The overall `request_ttl` (300 seconds)
+`max_tool_rounds` is configurable from 1 to 64 and defaults to 64 chat model calls per
+job across all attempts and restarts, including context planning, batch notes, and grounding checks.
+The overall `request_ttl` (1,800 seconds by default)
 and daily usage budget still apply. Existing explicit configuration values take
 precedence over the new defaults. On Android, edit `~/asko/config.local.json` and
 restart the service to apply overrides; deployment preserves this file.
+
+Context-note batches have at most three attempts each. Validation failures are retried
+with the local validation reason and the required schema; original source rows are still
+checked strictly. Transient network errors use exponential backoff with jitter;
+authentication and other permanent errors stop immediately. Exhausted batches do not
+restart the whole job. Successful batches are stored in SQLite and reused within the same
+job, including after restart or a later-stage failure. Cache keys include the exact batch,
+task, model, endpoint, generation settings, and notes contract. Source edits, deletion,
+and retention erase dependent entries; deleting a job cascades its entries too.
+The call counter and batch attempt counters are persisted before calls, so an interrupted
+request consumes its reserved attempt. Replay commands have an independent in-memory
+call budget and do not read or write the live job's notes cache. Schema version 6 adds
+this state; earlier binaries cannot open the upgraded database.
 
 Failed requests return a JSON diagnostic with `code`, `job_id`, `attempt`, model,
 and timeout settings. The server logs the same diagnostic with a `retry` flag.

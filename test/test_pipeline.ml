@@ -273,12 +273,12 @@ let () =
       let request={Types.message={m with seq=209L;created_at=now};trigger=Types.Mention;prompt="postgres"} in
       let capped={config with max_tool_rounds=1} in
       let calls_before= !chats in
-      Conversation.run ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
+      Conversation.run ~job_id:None ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
         ~request ~anchor:None ~reference:None ~history ~range ~version >>= fun capped_result ->
       check "tool round limit stops at configured call count" (!chats=calls_before+1 &&
         capped_result=Error (Llm.Limit_exceeded {resource="max_tool_rounds";actual=Some 1;limit=1}));
       let capped={config with max_tool_rounds=4} in
-      Conversation.run ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
+      Conversation.run ~job_id:None ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
         ~request ~anchor:None ~reference:None ~history ~range ~version >>= fun completed ->
       check "final permitted round can answer" (Result.is_ok completed && !chats=calls_before+5);
       let dry_store=Store.open_ ":memory:" in
