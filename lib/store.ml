@@ -94,7 +94,7 @@ let open_ path =
      exec t "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL";
      (match count t "PRAGMA user_version" [] with
       | 0 -> transaction t (fun () -> exec t schema)
-      | 1 | 2 | 3 | 4 | 5 -> ()
+      | 1 | 2 | 3 | 4 | 5 | 6 -> ()
       | _ -> raise (Error "database schema is newer than this program"));
      if count t "PRAGMA user_version" [] = 1 then
        transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN snapshot_version INTEGER; PRAGMA user_version=2");
@@ -115,6 +115,16 @@ let open_ path =
            GROUP BY source,room_id,sender_id,sender_name;
          PRAGMA user_version=5;
        |});
+     if count t "PRAGMA user_version" [] = 5 then
+       transaction t (fun () -> exec t {|
+         ALTER TABLE jobs ADD COLUMN model_calls INTEGER NOT NULL DEFAULT 0;
+         CREATE TABLE context_notes (
+           job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+           cache_key TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0,
+           notes TEXT, last_error TEXT, dependencies TEXT NOT NULL,
+           PRIMARY KEY(job_id,cache_key));
+         PRAGMA user_version=6;
+       |});
      exec t "CREATE INDEX IF NOT EXISTS messages_retention ON messages(created_at)";
      t
    with exn -> ignore (Sqlite3.db_close t.db); raise exn)
@@ -122,6 +132,29 @@ let close t = ignore (Sqlite3.db_close t.db)
 let optional_text stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_text stmt col)
 let optional_int64 stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_int64 stmt col)
 let optional_float stmt col = if Sqlite3.column_is_null stmt col then None else Some (Sqlite3.column_double stmt col)
+
+let job_model_calls t job_id =
+  count t "SELECT model_calls FROM jobs WHERE id=?" [integer job_id]
+let reserve_model_call t ~job_id ~limit =
+  run t "UPDATE jobs SET model_calls=model_calls+1 WHERE id=? AND model_calls<?"
+    [integer job_id;integer(Int64.of_int limit)];
+  Sqlite3.changes t.db=1
+
+let context_notes t ~job_id ~key =
+  one t "SELECT attempts,notes,last_error FROM context_notes WHERE job_id=? AND cache_key=?"
+    [integer job_id;text key]
+    (fun s->Sqlite3.column_int s 0,optional_text s 1,optional_text s 2)
+  |> Option.value ~default:(0,None,None)
+let reserve_context_notes t ~job_id ~key ~dependencies =
+  run t {|INSERT INTO context_notes(job_id,cache_key,attempts,dependencies) VALUES(?,?,1,?)
+    ON CONFLICT(job_id,cache_key) DO UPDATE SET attempts=attempts+1
+    WHERE attempts<3 AND notes IS NULL|}
+    [integer job_id;text key;text(Json_util.to_string (`List(List.map
+      (fun seq->`String(Int64.to_string seq)) dependencies)))];
+  Sqlite3.changes t.db=1
+let save_context_notes t ~job_id ~key ~notes ~error =
+  run t "UPDATE context_notes SET notes=?,last_error=? WHERE job_id=? AND cache_key=?"
+    [opt_text notes;opt_text error;integer job_id;text key]
 
 let observe_name t ~source ~room ~user_id ~name ~at ~current =
   let name=String.trim name in
@@ -208,6 +241,15 @@ let evidence_uses evidence seq =
        | Ok value -> value | Error _ -> true)
 
 let invalidate_message t ~source ~room ~seq =
+  let notes=rows t {|SELECT n.job_id,n.cache_key,n.dependencies FROM context_notes n
+    JOIN jobs j ON j.id=n.job_id JOIN messages m ON m.source=j.source AND m.seq=j.request_seq
+    WHERE m.source=? AND m.room_id=?|} [text source;text room]
+    (fun s->Sqlite3.column_int64 s 0,Sqlite3.column_text s 1,Sqlite3.column_text s 2) in
+  List.iter (fun (job_id,key,dependencies)->
+    let affected=match dependency_ids dependencies with
+      | Ok ids->List.mem (Int64.to_string seq) ids | Error _->true in
+    if affected then run t "DELETE FROM context_notes WHERE job_id=? AND cache_key=?"
+      [integer job_id;text key]) notes;
   let embeddings=rows t "SELECT cache_key,model,dependencies FROM embeddings WHERE source=? AND room_id=?"
     [text source;text room] (fun s->Sqlite3.column_text s 0,Sqlite3.column_text s 1,optional_text s 2) in
   List.iter (fun (key,model,dependencies) ->

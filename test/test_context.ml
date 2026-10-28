@@ -140,9 +140,9 @@ let () =
     let config={Config.default with openrouter_url=Printf.sprintf "http://127.0.0.1:%d" port;
       api_key="test";api_key_env="ASKO_CONTEXT_TEST_KEY";reasoning_enabled=false;max_tool_rounds=32} in
     Unix.putenv config.api_key_env "";
-    let run ?(anchor=None) config request history=
+    let run ?(anchor=None) ?(job_id=None) config request history=
       List.iter(fun m->ignore(Store.put_message store ~is_command:false m)) history;
-      Conversation.run ~config ~store ~llm:(Llm.create config store) ~name_messages:Lwt.return
+      Conversation.run ~job_id ~config ~store ~llm:(Llm.create config store) ~name_messages:Lwt.return
         ~request ~anchor ~reference ~history ~range:(if !testing_gap then {range with note=Some "timeout"} else range) ~version:0 in
     Lwt.finalize (fun () ->
       run config (request "최근 90분 대화 요약") (old@recent) >>= fun result ->
@@ -161,9 +161,21 @@ let () =
         (List.mem 1L (Result.get_ok anchored).answer.answer_sources);
       testing_anchor:=false; do_digest:=true; collected:=[];
       let many=List.init 240(fun n->message (2000+n) (now-.500.+.float_of_int n) (String.make 240 'x')) in
-      run {config with max_input_bytes=22000} (request "전체 대화 요약") many >>= fun digested ->
+      let digest_request=request "전체 대화 요약" in
+      ignore(Store.put_message store ~is_command:true digest_request.message);
+      let digest_config={config with rooms=["room"];max_input_bytes=22000} in
+      let job_id=match Store.enqueue store ~now ~config:digest_config digest_request with
+        | Store.Queued id->id | _->assert false in
+      run ~job_id:(Some job_id) digest_config digest_request many >>= fun digested ->
       let result=Result.get_ok digested in
       check "multi-batch summary reads every original including the final page"
         (List.length result.evidence_messages=240 && List.length !collected=240 && List.for_all(fun (m:message)->List.mem(Int64.to_string m.seq) !collected) many);
+      let attempts= !notes_attempts and calls=Store.job_model_calls store job_id in
+      run ~job_id:(Some job_id) digest_config digest_request many >>= fun reused->
+      check "whole-job retry reuses all successful batches and counts only new calls"
+        (Result.is_ok reused && !notes_attempts=attempts && Store.job_model_calls store job_id=calls+3);
+      run ~job_id:(Some job_id) {digest_config with max_tool_rounds=calls+3} digest_request many >>= fun capped->
+      check "whole-job retry cannot reset the conversation call budget"
+        (match capped with Error(Llm.Limit_exceeded {resource="max_tool_rounds";_})->true | _->false);
       Lwt.return_unit)
       (fun ()->Lwt.wakeup_later wake ();server)))

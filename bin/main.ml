@@ -126,7 +126,7 @@ let () =
             let open Lwt.Infix in
             Engine.reply_context engine message since >>= fun anchor->
             let reference=Store.answer_reference store message anchor in
-            Conversation.run ~config ~store ~llm:(Llm.create config store) ~name_messages:Lwt.return
+            Conversation.run ~job_id:None ~config ~store ~llm:(Llm.create config store) ~name_messages:Lwt.return
               ~request ~anchor ~reference ~history ~range
               ~version:(Store.room_version store ~source ~room:message.room_id) >|= function
             | Error error->die(Json_util.to_string(Llm.error_details error))

@@ -69,11 +69,14 @@ let participant_page people =
 type result = { answer : Llm.answer; evidence_messages : message list;
   input_messages : message list; coverage : Yojson.Safe.t }
 
-let run ~config ~store ~llm ~name_messages ~request ~anchor ~reference ~history ~range ~version =
-  let calls=ref 0 in
+let run ~job_id ~config ~store ~llm ~name_messages ~request ~anchor ~reference ~history ~range ~version =
+  let calls=ref(match job_id with None->0 | Some id->Store.job_model_calls store id) in
   let rec call ?(retry=1) f =
     if !calls>=config.Config.max_tool_rounds then Lwt.return(Error(Llm.Limit_exceeded {
       resource="max_tool_rounds";actual=Some !calls;limit=config.max_tool_rounds}))
+    else if (match job_id with None->false | Some id->
+      not(Store.reserve_model_call store ~job_id:id ~limit:config.max_tool_rounds)) then
+      Lwt.return(Error(Llm.Limit_exceeded {resource="max_tool_rounds";actual=Some !calls;limit=config.max_tool_rounds}))
     else (incr calls;f () >>= function
       | Error(Llm.Bad_response _) when retry>0->call ~retry:(retry-1) f
       | result->Lwt.return result) in
@@ -118,14 +121,19 @@ let run ~config ~store ~llm ~name_messages ~request ~anchor ~reference ~history 
     | Error error->Lwt.return(Error error)
     | Ok groups ->
         (* Reserve a draft and a grounding check; never silently skip overflow pages. *)
-        if List.length groups+ !calls+2>config.max_tool_rounds then
+        let pending=List.fold_left (fun n batch->
+          let cached=match job_id with None->false | Some job_id->
+            let key=Context_window.notes_key ~config ~request:effective_request batch in
+            let _,notes,_=Store.context_notes store ~job_id ~key in Option.is_some notes in
+          n+(if cached then 0 else 1)) 0 groups in
+        if pending+ !calls+2>config.max_tool_rounds then
           Lwt.return(Error(Llm.Limit_exceeded {resource="context_batches";
-            actual=Some(List.length groups);limit=max 0 (config.max_tool_rounds- !calls-2)}))
+            actual=Some pending;limit=max 0 (config.max_tool_rounds- !calls-2)}))
         else
           let pool=Lwt_pool.create 3 (fun ()->Lwt.return_unit) in
           let completed=ref 0 in
           Lwt_list.map_p (fun batch->Lwt_pool.use pool (fun ()->
-            call (fun ()->Context_window.notes ~llm ~request:effective_request batch) >|= fun result->
+            Context_retry.notes ~store ~job_id ~llm ~request:effective_request ~call:(call ~retry:0) batch >|= fun result->
             incr completed;
             trace "context_batch" ["completed",`Int !completed;"total",`Int(List.length groups);
               "ok",`Bool(Result.is_ok result)];
