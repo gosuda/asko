@@ -10,6 +10,15 @@ if [ -z "${OPENROUTER_API_KEY:-}" ] && [ -s secrets/openrouter.key ]; then
     OPENROUTER_API_KEY=$(cat secrets/openrouter.key)
     export OPENROUTER_API_KEY
 fi
+# Optional key files fill only unset variables; explicit empty values are kept.
+if [ "${OPENCODE_GO_API_KEY+x}" != x ] && [ -s secrets/opencode-go.key ]; then
+    OPENCODE_GO_API_KEY=$(cat secrets/opencode-go.key)
+    export OPENCODE_GO_API_KEY
+fi
+if [ "${ASKO_EMBEDDING_API_KEY+x}" != x ] && [ -s secrets/embedding.key ]; then
+    ASKO_EMBEDDING_API_KEY=$(cat secrets/embedding.key)
+    export ASKO_EMBEDDING_API_KEY
+fi
 if [ -z "${ASKO_INGEST_TOKEN:-}" ] && [ -s secrets/ingest.token ]; then
     ASKO_INGEST_TOKEN=$(cat secrets/ingest.token)
     export ASKO_INGEST_TOKEN

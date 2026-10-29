@@ -31,7 +31,8 @@ let callback config store _connection request body =
       response `OK (`Assoc ["ok", `Bool true; "version", `String "0.1.0";
         "runtime", `String (match Sys.backend_type with Native -> "native" | _ -> "bytecode");
         "ocaml_version", `String Sys.ocaml_version; "dry_run", `Bool config.Config.dry_run;
-        "allowed_rooms", `Int (List.length config.rooms); "store", Store.stats store])
+        "allowed_rooms", `Int (List.length config.rooms);
+        "scope_fingerprint",`String(Config.scope_fingerprint config); "store", Store.stats store])
   | `POST, "/events/iris" when not (authorized config request) -> error `Unauthorized "unauthorized"
   | `POST, "/events/iris" ->
       Lwt.catch (fun () ->

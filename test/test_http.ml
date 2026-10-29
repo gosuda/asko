@@ -28,6 +28,8 @@ let () =
       let post data = Net.json ~headers ~body:data ~timeout:3. `POST (url "/events/iris") in
       Net.json ~timeout:3. `GET (url "/health") >>= fun health ->
       check "HTTP health returns JSON" (get "ok" (Result.get_ok health)=`Bool true);
+      check "health exposes the running scope for doctor"
+        (get "scope_fingerprint" (Result.get_ok health)=`String(Config.scope_fingerprint config));
       Net.json ~body:(event 1 "안녕") ~timeout:3. `POST (url "/events/iris") >>= fun unauthorized ->
       check "unauthorized webhook rejected" (unauthorized=Error (Net.Http_status 401));
       post (event ~room:"b" 1 "비공개 방") >>= fun ignored ->

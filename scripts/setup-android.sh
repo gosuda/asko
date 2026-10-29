@@ -6,7 +6,7 @@ cd "$asko_repo"
 "$asko_repo/tools/prepare-toolchain.sh"
 asko_toolchain=$(cat .cache/toolchain-path)
 export PATH="$asko_toolchain/host-5.5.2/bin:$asko_repo/.cache/bin:$PATH"
-export OPAMROOT="$asko_repo/.cache/opam"
+export OPAMROOT="${ASKO_OPAM_ROOT:-$asko_repo/.cache/opam}"
 export ANDROID_NDK_ROOT="$asko_toolchain/android-ndk-r30"
 export ANDROID_API=26
 if ! opam repository list --switch asko-5.5.2 --short | grep -qx android; then

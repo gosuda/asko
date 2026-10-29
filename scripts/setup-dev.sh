@@ -51,7 +51,7 @@ if ! command -v m4 >/dev/null; then
     for asko_deb in .cache/debs/m4_*.deb; do dpkg-deb -x "$asko_deb" .cache/native-tools; done
     ln -sf ../native-tools/usr/bin/m4 .cache/bin/m4
 fi
-export OPAMROOT="$asko_repo/.cache/opam"
+export OPAMROOT="${ASKO_OPAM_ROOT:-$asko_repo/.cache/opam}"
 if [ ! -f "$OPAMROOT/config" ]; then
     asko_sandbox=()
     if [ "${ASKO_DISABLE_OPAM_SANDBOX:-0}" = 1 ]; then asko_sandbox=(--disable-sandboxing); fi
