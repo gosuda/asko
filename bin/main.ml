@@ -27,12 +27,16 @@ let () =
   let config_path = ref "config.local.json" in
   let output_path = ref "" in
   let embedding_model = ref "" in
+  let profile = ref "openrouter" in
+  let online = ref false in
   let job_id = ref 0 in
   let rest = if Array.length Sys.argv > 2 then Array.sub Sys.argv 2 (Array.length Sys.argv - 2) else [||] in
   let args = Array.append [|Sys.argv.(0)|] rest in
   (try Arg.parse_argv args ["--config", Arg.Set_string config_path, "Configuration JSON file";
                           "--output", Arg.Set_string output_path, "New backup database path";
                           "--embedding-model", Arg.Set_string embedding_model, "Embedding model override for this command";
+                          "--profile", Arg.Set_string profile, "Init preset: openrouter, opencode-go, local-jina";
+                          "--online", Arg.Set online, "Doctor: inspect Iris and backend connectivity (no model calls)";
                           "--job-id", Arg.Set_int job_id, "Historical job for replay (never sends)"]
        (fun _ -> raise (Arg.Bad "unexpected argument")) "asko COMMAND [--config path]"
    with Arg.Bad message -> prerr_endline message; exit 2
@@ -42,6 +46,23 @@ let () =
     if !embedding_model="" then config else {config with embedding_model= !embedding_model} in
   try
     match command with
+    | "init" ->
+        (match Onboarding.init ~path:!config_path ~name:!profile with
+         | Error error -> die error
+         | Ok () -> print_endline "Created private dry-run configuration. Configure credentials and allowed rooms, then run doctor.")
+    | "doctor" ->
+        let json,ready=Lwt_main.run(Onboarding.doctor ~path:!config_path ~online:!online) in
+        print_endline(Yojson.Safe.pretty_to_string json);
+        if not ready then exit 1
+    | "rooms" ->
+        let config=match Config.load ~require_credentials:false !config_path with
+          | Ok config -> {config with http_timeout=min 5. config.http_timeout}
+          | Error error -> die error in
+        (match Lwt_main.run(Iris.rooms(Iris.create config)) with
+         | Error error -> die ("Iris rooms unavailable: " ^ Net.error_name error)
+         | Ok rooms -> print_endline (Yojson.Safe.pretty_to_string (`Assoc ["rooms",`List(List.map(fun (id,name)->
+             `Assoc ["id",`String id;"name",Json_util.option (fun x->`String x) name;
+               "enabled",`Bool(Config.allowed config id)]) rooms)])))
     | "version" | "--version" -> Printf.printf "asko 0.1.0 (OCaml %s)\n" Sys.ocaml_version
     | "serve" -> serve (get_config ())
     | "status" -> let config = get_config () in
@@ -159,7 +180,7 @@ let () =
          | Error error -> die ("Iris configuration failed: " ^ Net.error_name error))
     | "embedding-mode" ->
         let c=get_config () in
-        print_endline (if Config.local_embeddings c then "local" else "remote")
+        print_endline (if Config.local_embeddings c && Provider.embedding_backend c=Provider.Jina then "local" else "remote")
     | "diagnose-recovery" ->
         let config=get_config () in
         with_store config (fun store -> Lwt_main.run (
@@ -196,6 +217,9 @@ let () =
           "model", `String c.model; "reasoning_enabled", `Bool c.reasoning_enabled;
           "embedding_model", `String c.embedding_model; "embedding_url", `String c.embedding_url;
           "response_format", `String c.response_format; "api_key_present", `Bool (Config.api_key c <> None);
+          "embedding_backend",`String c.embedding_backend;
+          "scope_fingerprint",`String(Config.scope_fingerprint c);
+          "embedding_key_present",`Bool (Config.local_embeddings c || Config.api_key_embed c<>None);
           "ingest_token_present", `Bool (Config.ingest_token c <> None)]))
     | "probe-chat" ->
         let config=get_config () in
@@ -223,7 +247,7 @@ let () =
          | Ok (200, body) -> Printf.printf "{\"https\":true,\"status\":200,\"bytes\":%d}\n" (String.length body)
          | Ok (status, _) -> die ("HTTPS probe status " ^ string_of_int status)
          | Error error -> die ("HTTPS probe failed: " ^ Net.error_name error))
-    | _ -> print_endline "asko serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backfill-embeddings | replay-job --job-id ID | backup --output path | probe-chat | probe-https | version [--config path]"
+    | _ -> print_endline "asko init [--profile openrouter|opencode-go|local-jina] | doctor [--online] | rooms | serve | status | outbox | check-config | iris-info | configure-iris | sync-names | diagnose-recovery | diagnose-jobs | backfill-embeddings | replay-job --job-id ID | backup --output path | probe-chat | probe-https | version [--config path]"
   with
   | Store.Error error -> die ("database error: " ^ error)
   | Sys_error _ -> die "filesystem operation failed"

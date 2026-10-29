@@ -32,9 +32,11 @@ type t = {
   response_format : string;
   embedding_model : string;
   embedding_url : string;
+  embedding_backend : string;
   api_key : string;
   api_key_embed : string;
   api_key_env : string;
+  api_key_embed_env : string;
   ingest_token_env : string;
   allow_insecure_loopback : bool;
 }
@@ -50,14 +52,16 @@ let default = {
   chat_backend="openrouter"; chat_provider_only=[];
   model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_schema";
   embedding_model="google/gemini-embedding-001"; embedding_url="https://openrouter.ai/api/v1";
+  embedding_backend="auto";
   api_key=""; api_key_embed=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
+  api_key_embed_env="";
   allow_insecure_loopback=false;
 }
 
 let go_glm config =
   config.chat_backend="opencode_go" && List.mem config.model ["glm-5.3";"glm-5.3-flash"]
 
-let of_json json = Json_util.protect (fun () ->
+let of_json ?(require_credentials=true) json = Json_util.protect (fun () ->
   let d = default in
   let open Json_util in
   let s name value = default string value (field name json) in
@@ -65,6 +69,10 @@ let of_json json = Json_util.protect (fun () ->
   let f name value = default float value (field name json) in
   let b name value = default bool value (field name json) in
   let strings name value = default (list string) value (field name json) in
+  let chat_url = match optional string (field "chat_url" json), optional string (field "openrouter_url" json) with
+    | Some a, Some b when a<>b -> invalid "chat_url and openrouter_url must match when both are set"
+    | Some url, _ | None, Some url -> url
+    | None, None -> d.openrouter_url in
   let c = {
     source_id=s "source_id" d.source_id; port=i "port" d.port;
     telemetry_path=s "telemetry_path" d.telemetry_path;
@@ -86,17 +94,19 @@ let of_json json = Json_util.protect (fun () ->
     max_response_bytes=i "max_response_bytes" d.max_response_bytes;
     max_output_tokens=i "max_output_tokens" d.max_output_tokens;
     daily_budget_tokens=i "daily_budget_tokens" d.daily_budget_tokens;
-    openrouter_url=s "openrouter_url" d.openrouter_url;
+    openrouter_url=chat_url;
     chat_backend=s "chat_backend" d.chat_backend;
     chat_provider_only=strings "chat_provider_only" d.chat_provider_only;
     model=s "model" d.model; embedding_model=s "embedding_model" d.embedding_model;
     reasoning_enabled=b "reasoning_enabled" d.reasoning_enabled;
     reasoning_max_tokens=i "reasoning_max_tokens" d.reasoning_max_tokens;
     embedding_url=s "embedding_url" d.embedding_url;
+    embedding_backend=s "embedding_backend" d.embedding_backend;
     response_format=s "response_format" d.response_format;
     api_key=String.trim (s "api_key" d.api_key);
     api_key_embed=String.trim (s "api_key_embed" d.api_key_embed);
     api_key_env=s "api_key_env" d.api_key_env;
+    api_key_embed_env=s "api_key_embed_env" d.api_key_embed_env;
     ingest_token_env=s "ingest_token_env" d.ingest_token_env;
     allow_insecure_loopback=b "allow_insecure_loopback" d.allow_insecure_loopback;
   } in
@@ -135,15 +145,21 @@ let of_json json = Json_util.protect (fun () ->
   let local_embed=List.mem (Uri.host (Uri.of_string c.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"] in
   valid_url ~https:(not local_embed) c.embedding_url;
   if not (List.mem c.chat_backend ["openrouter";"opencode_go"]) then invalid "invalid chat_backend";
-  if not (List.mem (Uri.host (Uri.of_string c.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"])
+  if not (List.mem c.embedding_backend ["auto";"openrouter";"openai_compatible";"jina"])
+  then invalid "embedding_backend must be auto, openrouter, openai_compatible, or jina";
+  let valid_env value = value="" || (String.for_all (function 'a'..'z'|'A'..'Z'|'0'..'9'|'_'->true|_->false) value
+    && (match value.[0] with '0'..'9'->false|_->true)) in
+  if not(valid_env c.api_key_embed_env) then invalid "api_key_embed_env must be an environment variable name";
+  if require_credentials && not local_embed
      && c.embedding_url<>c.openrouter_url
      && String.trim c.api_key_embed=""
-  then invalid "separate remote embedding endpoint requires api_key_embed";
+     && c.api_key_embed_env=""
+  then invalid "separate remote embedding endpoint requires api_key_embed or api_key_embed_env";
   if not c.dry_run && (c.bot_id = "" || c.bot_id = "0") then invalid "bot_id is required before live delivery";
   c)
 
-let load path =
-  try match of_json (Yojson.Safe.from_file path) with
+let load ?(require_credentials=true) path =
+  try match of_json ~require_credentials (Yojson.Safe.from_file path) with
     | Ok config ->
         let resolve p=if p<>"" && Filename.is_relative p then Filename.concat(Filename.dirname path) p else p in
         Ok {config with db_path=resolve config.db_path;telemetry_path=resolve config.telemetry_path}
@@ -159,9 +175,20 @@ let api_key config = match env_value config.api_key_env with
   | Some _ as value -> value
   | None -> let value=String.trim config.api_key in if value="" then None else Some value
 let api_key_embed config =
-  let key=String.trim config.api_key_embed in
-  if key<>"" then Some key
-  else if config.embedding_url=config.openrouter_url then api_key config else None
+  match env_value config.api_key_embed_env with
+  | Some _ as value -> value
+  | None ->
+      let key=String.trim config.api_key_embed in
+      if key<>"" then Some key
+      else if config.api_key_embed_env="" && config.embedding_url=config.openrouter_url then api_key config else None
 let ingest_token config = env_value config.ingest_token_env
 let local_embeddings config =
   List.mem (Uri.host (Uri.of_string config.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"]
+
+(* Compare active ingestion/delivery scope without exposing room IDs or secrets.
+   This is a configuration identifier, not an authentication mechanism. *)
+let scope_fingerprint config =
+  let value=`List [`String "asko-scope-v1";`String config.source_id;`String config.bot_id;
+    `List(List.map(fun id->`String id)(List.sort_uniq String.compare config.rooms));
+    `Bool config.dry_run;`String config.iris_url] in
+  Digest.to_hex(Digest.string(Json_util.to_string value))

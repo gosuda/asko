@@ -52,6 +52,27 @@ let configuration t = Telemetry.result ~error:Net.error_name
   ~fields:["operation",`String "configuration";"endpoint",`String "/config"] "iris_http" (fun ()->
   Net.json ~timeout:t.config.http_timeout `GET (Net.endpoint t.config.iris_url "/config"))
 
+(* Explicit setup command only: room metadata, never message bodies or membership. *)
+let rooms t =
+  query t ~operation:"list_rooms" {|SELECT r.id AS room_id, r.private_meta, l.name AS name
+    FROM chat_rooms r LEFT JOIN db2.open_link l ON l.id = r.link_id
+    WHERE r.link_id IS NOT NULL AND r.link_id <> 0 ORDER BY r.id|} []
+  >|= function
+  | Error error -> Error error
+  | Ok rows ->
+      (match Json_util.protect(fun ()->List.map(fun row->
+        let id=Json_util.required "room_id" row |> Json_util.id in
+        let custom=match Json_util.field "private_meta" row with
+          | None | Some `Null -> None
+          | Some value -> (match Json_util.protect(fun ()->
+              Json_util.json_string value |> Json_util.field "name" |> Json_util.optional Json_util.string) with
+              | Ok name -> name | Error _ -> None) in
+        let name=match custom with
+          | Some name when String.trim name<>"" -> Some name
+          | _ -> Json_util.optional Json_util.string (Json_util.field "name" row) in
+        id,Option.map (Utf8.take 512) name) rows) with
+       | Ok rooms -> Ok rooms | Error _ -> Error Net.Invalid_json)
+
 let room_names t room =
   query t ~operation:"room_names" {|SELECT user_id,nickname AS name,enc FROM db2.open_chat_member
     WHERE involved_chat_id = ? OR link_id = (SELECT link_id FROM chat_rooms WHERE id = ? AND link_id<>0)

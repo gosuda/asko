@@ -42,6 +42,41 @@ exec 9>var/deploy.lock
 /system/bin/flock -n 9 9>&9
 test "$(sha256sum "releases/$asko_pending/SHA256SUMS" | cut -c 1-16)" = "$asko_release"
 (cd "releases/$asko_pending" && sha256sum -c SHA256SUMS)
+if [ -e current ] && [ ! -L current ]; then printf '%s\n' 'current must be a release symlink' >&2; exit 1; fi
+if [ -e current.next ] && [ ! -L current.next ]; then printf '%s\n' 'current.next must be a release symlink' >&2; exit 1; fi
+asko_config="$PWD/config.local.json"
+if [ ! -f "$asko_config" ]; then
+    if [ -e "$asko_config" ] || [ -L "$asko_config" ]; then
+        printf '%s\n' 'config.local.json must be a configuration file.' >&2; exit 1
+    fi
+    asko_config="$PWD/releases/$asko_pending/config.example.json"
+fi
+chmod 700 "releases/$asko_pending/asko"
+# Check the candidate before changing the active release, launchers or config.
+# Keep secret loading identical to run-phone.sh, including legacy empty-key fallback.
+(
+    export SSL_CERT_FILE="$PWD/releases/$asko_pending/cacert.pem"
+    export TMPDIR=/data/data/com.termux/files/usr/tmp
+    unset LD_PRELOAD LD_LIBRARY_PATH
+    if [ -z "${OPENROUTER_API_KEY:-}" ] && [ -s secrets/openrouter.key ]; then
+        OPENROUTER_API_KEY=$(cat secrets/openrouter.key)
+        export OPENROUTER_API_KEY
+    fi
+    if [ "${OPENCODE_GO_API_KEY+x}" != x ] && [ -s secrets/opencode-go.key ]; then
+        OPENCODE_GO_API_KEY=$(cat secrets/opencode-go.key)
+        export OPENCODE_GO_API_KEY
+    fi
+    if [ "${ASKO_EMBEDDING_API_KEY+x}" != x ] && [ -s secrets/embedding.key ]; then
+        ASKO_EMBEDDING_API_KEY=$(cat secrets/embedding.key)
+        export ASKO_EMBEDDING_API_KEY
+    fi
+    if [ -z "${ASKO_INGEST_TOKEN:-}" ] && [ -s secrets/ingest.token ]; then
+        ASKO_INGEST_TOKEN=$(cat secrets/ingest.token)
+        export ASKO_INGEST_TOKEN
+    fi
+    "./releases/$asko_pending/asko" check-config --config "$asko_config"
+    "./releases/$asko_pending/asko" version --config "$asko_config"
+)
 if [ -e "releases/$asko_release" ]; then
     test ! -L "releases/$asko_release"
     cmp "releases/$asko_pending/SHA256SUMS" "releases/$asko_release/SHA256SUMS"
@@ -62,12 +97,9 @@ done
 chmod 600 secrets/ingest.token
 if [ ! -f config.local.json ]; then cp "releases/$asko_release/config.example.json" config.local.json; fi
 chmod 600 config.local.json
-if [ -e current ] && [ ! -L current ]; then printf '%s\n' 'current must be a release symlink' >&2; exit 1; fi
 if [ -L current ] && [ "$(readlink current)" != "releases/$asko_release" ]; then readlink current > previous-release; fi
 if [ -L current.next ]; then rm current.next; fi
 ln -s "releases/$asko_release" current.next
 mv -Tf current.next current
-./run-phone.sh check-config
-./run-phone.sh version
 REMOTE
 printf 'Deployed verified release %s. Existing configuration and database preserved; process not restarted.\n' "$asko_release"

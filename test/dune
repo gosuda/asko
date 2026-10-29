@@ -52,3 +52,25 @@
  (name test_go)
  (modules test_go)
  (libraries asko unix yojson lwt.unix cohttp-lwt-unix))
+
+(test
+ (name test_onboarding)
+ (modules test_onboarding)
+ (libraries asko unix yojson))
+
+(rule
+ (alias runtest)
+ (deps test_cli.py ../config.example.json (glob_files ../examples/config.*.json))
+ (action (run python3 %{dep:test_cli.py} %{exe:../bin/main.exe})))
+
+(rule
+ (alias runtest)
+ (deps test_phone_scripts.py ../scripts/deploy-android.sh ../scripts/control-phone.sh
+   ../scripts/supervise-phone.sh ../scripts/run-phone.sh ../tools/fix-phone-ssh.sh)
+ (action (run python3 -B %{dep:test_phone_scripts.py})))
+
+(rule
+ (alias runtest)
+ (deps test_boot_scripts.py ../scripts/install-boot-service.sh ../scripts/deploy-iris-phone.sh
+   ../tools/magisk-asko.sh.in ../tools/magisk-iris.sh.in)
+ (action (run python3 -B %{dep:test_boot_scripts.py})))

@@ -1,0 +1,23 @@
+#!/system/bin/sh
+# Magisk late_start. Installed only with install-boot-service.sh --with-iris.
+# Keep the packaged launcher's firewall and private mount mandatory.
+asko_uid=@UID@
+(
+  set -eu
+  unset LD_PRELOAD LD_LIBRARY_PATH
+  case "$asko_uid" in ''|*[!0-9]*) exit 1;; esac
+  [ "$asko_uid" -ge 10000 ] || exit 1
+  # First unlock may happen much later than boot. Wait in the background without
+  # a deadline, just like the backend launcher.
+  until [ -d /data/data/com.termux/files/home/asko ] &&
+        { [ -d /data/data/com.kakao.talk/databases ] ||
+          [ -d /data_mirror/data_ce/null/0/com.kakao.talk/databases ]; } &&
+        [ -d /sdcard/Android ] &&
+        [ -x /data/local/tmp/asko-iris/iris-start.sh ] &&
+        [ -r /data/local/tmp/asko-iris/iris-inner.sh ] &&
+        [ -r /data/local/tmp/asko-iris/Iris.apk ]; do
+    /system/bin/sleep 5
+  done
+  [ "$(/system/bin/stat -c %u /data/data/com.termux)" = "$asko_uid" ] || exit 1
+  exec /system/bin/sh /data/local/tmp/asko-iris/iris-start.sh
+) >/dev/null 2>&1 </dev/null &

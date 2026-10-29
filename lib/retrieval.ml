@@ -72,9 +72,7 @@ let valid_vector expected vector =
   Array.length vector>0 && (match expected with None->true | Some n->Array.length vector=n)
   && Array.for_all Float.is_finite vector && Array.exists (fun x->x<>0.) vector
 
-let expected_dimensions config =
-  if not(Config.local_embeddings config) && config.Config.embedding_model="google/gemini-embedding-001"
-  then Some 3072 else None
+let expected_dimensions = Provider.embedding_dimensions
 
 let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages =
   Telemetry.result ~error:Llm.error_name ~fields:["message_count",`Int(List.length messages)] "embedding_index" (fun ()->
@@ -86,7 +84,7 @@ let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages
   let values=Telemetry.sync "chunk_build" (fun ()->Array.of_list(chunks messages)) in
   let vectors=Telemetry.sync "vector_cache_load" (fun ()->Array.map (fun chunk->
     match Store.get_embedding store ~source:range.source ~room:range.room_id ~key:(cache_key chunk)
-      ~model:config.Config.embedding_model ~content:chunk.content with
+      ~model:(Provider.embedding_cache_model config) ~content:chunk.content with
     | Some vector when valid_vector (expected_dimensions config) vector->Some vector
     | _->None) values) in
   let missing=Array.to_list(Array.mapi(fun i v->if v=None then Some i else None) vectors) |> List.filter_map Fun.id in
@@ -97,7 +95,7 @@ let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages
   let rec fill pending = match pending with
     | []->Lwt.return(Ok(values,vectors))
     | _->
-        let batch=take (if Config.local_embeddings config then 1 else 16) pending in
+        let batch=take (Provider.embedding_batch_size config) pending in
         let rest=List.filter (fun i->not(List.mem i batch)) pending in
         Llm.embed llm (List.map(fun i->values.(i).content) batch) >>= function
         | Error error->Lwt.return(Error error)
@@ -109,7 +107,7 @@ let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages
               Telemetry.sync ~fields:["batch_size",`Int(List.length batch)] "vector_cache_write" (fun ()->List.iter2(fun i vector->
                 let chunk=values.(i) in
                 Store.put_embedding ~snapshot:(snapshot chunk) store ~source:range.source ~room:range.room_id
-                  ~key:(cache_key chunk) ~model:config.embedding_model ~content:chunk.content
+                  ~key:(cache_key chunk) ~model:(Provider.embedding_cache_model config) ~content:chunk.content
                   ~at:(Unix.gettimeofday ()) ~version vector;
                 vectors.(i)<-Some vector) batch embedded);
               progress (total-List.length rest) total;

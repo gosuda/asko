@@ -72,8 +72,7 @@ let call t ~output_tokens ~path body =
             | Error error->Telemetry.result_fields error_name (Error error)
             | Ok json->Telemetry.usage_fields json) "model_request" (fun ()->
           let headers=["authorization","Bearer " ^ key] @
-            (if path<>"/embeddings" && t.config.chat_backend="opencode_go" then
-              ["x-opencode-session",t.session] else []) in
+            (if path<>"/embeddings" then Provider.chat_headers t.config t.session else []) in
           let base=if path="/embeddings" then t.config.embedding_url else t.config.openrouter_url in
           Net.json ~headers ~body
             ~timeout:t.config.http_timeout `POST (Net.endpoint base path)
@@ -87,17 +86,8 @@ let call t ~output_tokens ~path body =
               Ok json)
       end
 
-let chat_provider config =
-  let fields = ["require_parameters",`Bool true;"data_collection",`String "deny"] in
-  `Assoc (fields @ if config.Config.chat_provider_only=[] then [] else
-    ["only",strings config.chat_provider_only;"allow_fallbacks",`Bool false])
-
-let chat_options config reasoning =
-  if config.Config.chat_backend="opencode_go" then
-    (* Go's GLM endpoint rejects thinking; reasoning_content is preserved by turn. *)
-    if Config.go_glm config then [] else
-      ["thinking",`Assoc ["type",`String (if config.reasoning_enabled then "enabled" else "disabled")]]
-  else ["reasoning",reasoning;"provider",chat_provider config]
+let chat_provider = Provider.chat_provider
+let chat_options = Provider.chat_options
 
 let turn t ~messages ~tools =
   Telemetry.result ~error:error_name "answer_generation" (fun ()->
@@ -225,16 +215,9 @@ let embed t ?(query=false) inputs =
     "model",`String t.config.embedding_model]
     (if query then "embedding_query" else "embedding_documents") (fun ()->
   let local=Config.local_embeddings t.config in
-  let prefix=if local then (if query then "Query: " else "Document: ") else "" in
-  let body = `Assoc ["model",`String t.config.embedding_model;
-    "input",strings (List.map (fun text->prefix ^ text) inputs); "encoding_format",`String "float"] in
-  let body=if not local && t.config.embedding_model="google/gemini-embedding-001" then
-    `Assoc (Json_util.object_ body @ ["dimensions",`Int 3072;
-      "input_type",`String(if query then "search_query" else "search_document")]) else body in
+  let body=Provider.embedding_body t.config ~query inputs in
   let request=if not local then
-    let fields=Json_util.object_ body in
-    call t ~output_tokens:0 ~path:"/embeddings"
-      (`Assoc (fields @ ["provider",`Assoc ["data_collection",`String "deny"]]))
+    call t ~output_tokens:0 ~path:"/embeddings" body
     else if String.length (Json_util.to_string body)>t.config.max_input_bytes then
     Lwt.return (Error (Limit_exceeded {resource="max_input_bytes";
       actual=Some (String.length (Json_util.to_string body));limit=t.config.max_input_bytes}))
