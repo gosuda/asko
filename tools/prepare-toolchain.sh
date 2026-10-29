@@ -18,32 +18,32 @@ fi
 [ "$(git -C "$asko_root/opam-cross-android" rev-parse HEAD)" = "$asko_recipe_commit" ]
 
 if [ "${ASKO_NATIVE_ONLY:-0}" != 1 ]; then
-if [ ! -f "$asko_root/android-ndk-r29-linux.zip" ]; then
-    curl --fail --location --retry 2 -o "$asko_root/android-ndk-r29-linux.zip.part" https://dl.google.com/android/repository/android-ndk-r29-linux.zip
-    mv "$asko_root/android-ndk-r29-linux.zip.part" "$asko_root/android-ndk-r29-linux.zip"
+if [ ! -f "$asko_root/android-ndk-r30-linux.zip" ]; then
+    curl --fail --location --retry 2 -o "$asko_root/android-ndk-r30-linux.zip.part" https://dl.google.com/android/repository/android-ndk-r30-linux.zip
+    mv "$asko_root/android-ndk-r30-linux.zip.part" "$asko_root/android-ndk-r30-linux.zip"
 fi
-printf '%s  %s\n' 87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b "$asko_root/android-ndk-r29-linux.zip" | sha1sum --check --status
-if [ ! -d "$asko_root/android-ndk-r29" ]; then
-    unzip -q "$asko_root/android-ndk-r29-linux.zip" -d "$asko_root"
-fi
-
+printf '%s  %s\n' 5107f898313790e449e87eee2183d9a20602dee9 "$asko_root/android-ndk-r30-linux.zip" | sha1sum --check --status
+if [ ! -d "$asko_root/android-ndk-r30" ]; then
+    unzip -q "$asko_root/android-ndk-r30-linux.zip" -d "$asko_root"
 fi
 
-if [ ! -f "$asko_root/ocaml-5.4.1.tar.gz" ]; then
-    curl --fail --location --retry 2 -o "$asko_root/ocaml-5.4.1.tar.gz.part" https://github.com/ocaml/ocaml/releases/download/5.4.1/ocaml-5.4.1.tar.gz
-    mv "$asko_root/ocaml-5.4.1.tar.gz.part" "$asko_root/ocaml-5.4.1.tar.gz"
 fi
-printf '%s  %s\n' d4528517aaa1a44b8e2b1bc109a1ed0a5e0014f3ddc4feb8906b11a7e063e89a "$asko_root/ocaml-5.4.1.tar.gz" | sha256sum --check --status
-for asko_src in host-src android-src; do
+
+if [ ! -f "$asko_root/ocaml-5.5.2.tar.gz" ]; then
+    curl --fail --location --retry 2 -o "$asko_root/ocaml-5.5.2.tar.gz.part" https://github.com/ocaml/ocaml/releases/download/5.5.2/ocaml-5.5.2.tar.gz
+    mv "$asko_root/ocaml-5.5.2.tar.gz.part" "$asko_root/ocaml-5.5.2.tar.gz"
+fi
+printf '%s  %s\n' bb3ffef5e4fce4f04915b9f254f570663311e1f227fd669aa87a5ef7de9a1523 "$asko_root/ocaml-5.5.2.tar.gz" | sha256sum --check --status
+for asko_src in host-src-5.5.2; do
     mkdir -p "$asko_root/$asko_src"
     if [ ! -f "$asko_root/$asko_src/configure" ]; then
-        tar -xzf "$asko_root/ocaml-5.4.1.tar.gz" -C "$asko_root/$asko_src" --strip-components=1
+        tar -xzf "$asko_root/ocaml-5.5.2.tar.gz" -C "$asko_root/$asko_src" --strip-components=1
     fi
 done
-if [ ! -x "$asko_root/host/bin/ocamlopt" ]; then
-    cd "$asko_root/host-src"
-    ./configure --prefix="$asko_root/host" --without-zstd --disable-warn-error
-    make -j8 world.opt
+if [ ! -x "$asko_root/host-5.5.2/bin/ocamlopt" ]; then
+    cd "$asko_root/host-src-5.5.2"
+    ./configure --prefix="$asko_root/host-5.5.2" --without-zstd --disable-warn-error
+    make -j"${ASKO_JOBS:-6}" world.opt
     make install
 fi
-[ "$("$asko_root/host/bin/ocamlopt" -version)" = 5.4.1 ]
+[ "$("$asko_root/host-5.5.2/bin/ocamlopt" -version)" = 5.5.2 ]

@@ -5,9 +5,12 @@ cd "$asko_repo"
 asko_target=${1:-asko-phone}
 if [[ ! "$asko_target" =~ ^[A-Za-z0-9][A-Za-z0-9_.@-]*$ ]]; then exit 2; fi
 ./scripts/build-jina-android.sh
+asko_build=$(cat .cache/jina/build-path)
+asko_binary="$asko_build/bin/llama-server"
+test -x "$asko_binary"
 ssh -o BatchMode=yes -- "$asko_target" 'umask 077; cd asko; test ! -f var/supervisor.pid; mkdir -p embedding'
-scp -q .cache/jina/build-android/bin/llama-server "$asko_target:asko/embedding/llama-server.next"
-asko_hash=$(sha256sum .cache/jina/build-android/bin/llama-server | cut -d ' ' -f 1)
+scp -q "$asko_binary" "$asko_target:asko/embedding/llama-server.next"
+asko_hash=$(sha256sum "$asko_binary" | cut -d ' ' -f 1)
 test "$(ssh -o BatchMode=yes -- "$asko_target" 'sha256sum asko/embedding/llama-server.next' | cut -d ' ' -f 1)" = "$asko_hash"
 asko_model_hash=86b6e6279e9b9e71389f02a082764a2ac2b15a50e37482c26f98d69092f12442
 if ! ssh -o BatchMode=yes -- "$asko_target" "test -f asko/embedding/jina-q8.gguf && echo '$asko_model_hash  asko/embedding/jina-q8.gguf' | sha256sum -c -"; then

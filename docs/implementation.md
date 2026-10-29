@@ -22,6 +22,8 @@ Reply length follows the request: simple answers can be short, while explanation
 
 ## Validation record
 
+On 2026-10-29, the dependency refresh was built in a fresh project-local compiler and opam switch using OCaml 5.5.2, opam 2.6.1, Dune 3.24.2 and NDK r30 (Android API 26). All 11 test executables passed on Linux and the phone, with 454 assertions on each. Native and Android HTTPS probes to OpenRouter's public model list returned HTTP 200 with certificate verification enabled. The Android binary uses SQLite 3.54.1, TLS 2.1.4, Mirage Crypto 2.4.1 and X509 1.2.0. These checks use mock conversation/model data and make no paid model calls. The optional llama.cpp v0.8.0 binary also ran on the phone: synthetic query and document requests each returned 768 finite, unit-normalized embedding values. Repeating native setup completed without package changes.
+
 PC and Galaxy SM-F711N (Android 15) runs covered the domain, SQLite, HTTP, summaries, and mock pipeline. Checks included all invocation paths, more than 200 recovered messages, cursor recovery after a failed page, room isolation, embedding reuse, deletion reconciliation, dry-run protection, and delivery confirmation races.
 
 The phone ran native OCaml 5.4.1 binaries built with NDK r29 for Android API 26, with `LD_PRELOAD` and `LD_LIBRARY_PATH` unset. HTTPS to OpenRouter's public model list passed with Mozilla CA verification enabled. The earlier Unix-only HTTP smoke test also covered GET, Korean JSON POST, and 404 responses.

@@ -7,21 +7,21 @@ for asko_command in gcc make curl git tar bzip2 xz unzip patch python3 pkg-confi
     command -v "$asko_command" >/dev/null || { printf 'Missing build tool: %s\n' "$asko_command" >&2; exit 1; }
 done
 mkdir -p .cache/bin
-if [ ! -f .cache/bin/opam ]; then
-    curl --fail --location --silent --show-error --retry 2 -o .cache/bin/opam \
-      https://github.com/ocaml/opam/releases/download/2.5.2/opam-2.5.2-x86_64-linux
+asko_opam_sha=b533d393a6967150d6ef41cb3d71e147e93ecbabeb59e921aa412c0ae79ebe3d
+if ! printf '%s  %s\n' "$asko_opam_sha" .cache/bin/opam | sha256sum --check --status 2>/dev/null; then
+    asko_opam_tmp=$(mktemp .cache/bin/opam.XXXXXX)
+    trap 'rm -f -- "$asko_opam_tmp"' EXIT
+    curl --fail --location --silent --show-error --retry 2 -o "$asko_opam_tmp" \
+      https://github.com/ocaml/opam/releases/download/2.6.1/opam-2.6.1-x86_64-linux
+    printf '%s  %s\n' "$asko_opam_sha" "$asko_opam_tmp" | sha256sum --check --status
+    chmod 700 "$asko_opam_tmp"
+    mv -f "$asko_opam_tmp" .cache/bin/opam
+    trap - EXIT
 fi
-python3 - <<'PY'
-from pathlib import Path
-import hashlib
-p=Path('.cache/bin/opam')
-if hashlib.sha256(p.read_bytes()).hexdigest()!='edfca2630c373b44b7ee1c2f81cd8dcf67468d0db57d6c02158de553ac63dbd4':
-    raise SystemExit('opam checksum mismatch')
-p.chmod(0o700)
-PY
+chmod 700 .cache/bin/opam
 ASKO_NATIVE_ONLY=1 "$asko_repo/tools/prepare-toolchain.sh"
 asko_toolchain=$(cat .cache/toolchain-path)
-export PATH="$asko_toolchain/host/bin:$asko_repo/.cache/bin:$PATH"
+export PATH="$asko_toolchain/host-5.5.2/bin:$asko_repo/.cache/bin:$PATH"
 if ! pkg-config --exists gmp sqlite3 && ! PKG_CONFIG_PATH="$asko_repo/.cache/native-sysroot/usr/lib/x86_64-linux-gnu/pkgconfig" pkg-config --exists gmp sqlite3; then
     command -v apt-get >/dev/null || { printf '%s\n' 'Install native GMP and SQLite development libraries first.' >&2; exit 1; }
     mkdir -p .cache/debs .cache/native-sysroot
@@ -56,9 +56,11 @@ if [ ! -f "$OPAMROOT/config" ]; then
     asko_sandbox=()
     if [ "${ASKO_DISABLE_OPAM_SANDBOX:-0}" = 1 ]; then asko_sandbox=(--disable-sandboxing); fi
     opam init --bare --no-setup --yes "${asko_sandbox[@]}" default https://opam.ocaml.org
+else
+    opam update default
 fi
-if ! opam switch list --short | grep -qx asko; then
-    opam switch create asko ocaml-system.5.4.1 --yes
+if ! opam switch list --short | grep -qx asko-5.5.2; then
+    opam switch create asko-5.5.2 ocaml-system.5.5.2 --yes
 fi
 "$asko_repo/scripts/dev" opam install --deps-only --locked --assume-depexts --yes --jobs="${ASKO_JOBS:-6}" .
 "$asko_repo/scripts/dev" dune build @all

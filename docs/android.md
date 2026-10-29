@@ -11,13 +11,15 @@ make test
 make android
 ```
 
-Tools stay in `.cache/`. The scripts use OCaml 5.4.1, opam 2.5.2, NDK r29, a pinned Android package repository, and `asko.opam.locked`. Android SQLite and GMP recipes live in `opam/`.
+Tools stay in `.cache/`. The scripts use OCaml 5.5.2, opam 2.6.1, NDK r30, a pinned Android package repository, and `asko.opam.locked`. Android SQLite and GMP recipes live in `opam/`. Local overrides also pin the Android compiler and updated HTTP, TLS, cryptography, and build libraries. SQLite bindings remain at 5.4.2, with SQLite 3.54.1 statically linked on Android.
 
 Install `gcc`, `make`, `git`, `curl`, `tar`, `bzip2`, `xz`, `unzip`, `patch`, `python3`, `pkg-config`, `readelf`, and `file`. Jina also needs CMake and Ninja. On Debian/Ubuntu, missing GMP and SQLite headers are downloaded with `apt-get download` and unpacked locally; their runtime libraries must already be installed. Allow several GB for tools and sources.
 
+The host compiler is installed under `host-5.5.2` and packages use the `asko-5.5.2` opam switch, so setup can retain the previous compiler and switch. Native and Android dependencies are installed separately; refresh both with `make setup-android`. The lock uses opam's `ocamlfind 1.9.9~preview` package (fixed upstream commit and checksums), because 1.9.8 excludes OCaml 5.5. This is a build tool, not a phone runtime dependency.
+
 Use `ASKO_TOOLCHAIN_DIR=/path/to/toolchain` to reuse tools. Set `ASKO_DISABLE_OPAM_SANDBOX=1` only on runners that cannot support opam's sandbox. Setup leaves shell profiles and system packages unchanged.
 
-For a regular opam environment, install OCaml 5.4.1 and the GMP and SQLite development libraries, then run `opam install . --deps-only --locked` and `dune build`. The Make targets wrap the project-local scripts:
+For a regular opam environment, install OCaml 5.5.2 and the GMP and SQLite development libraries, then run `opam install . --deps-only --locked` and `dune build`. The Make targets wrap the project-local scripts:
 
 ```sh
 make setup
@@ -121,7 +123,7 @@ For a historical quality check without posting to KakaoTalk, use `./run-phone.sh
 
 To run Jina on the phone, stop the backend, run `./scripts/deploy-jina-phone.sh asko-phone`, and set `embedding_model` to `jina-v5-nano-retrieval-q8` and `embedding_url` to `http://127.0.0.1:8081/v1` before restarting.
 
-Jina uses the official `jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF` Q8_0 weights, about 233 MB, under CC-BY-NC-4.0. The installer pins the model checksum and llama.cpp revision `ebbb185227c31f1652f1445e2623563d2f67fe5a`.
+Jina uses the official `jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF` Q8_0 weights, about 233 MB, under CC-BY-NC-4.0. The installer pins the model checksum and llama.cpp v0.8.0 at revision `8642541b255bfb5dc39cd351a178be09013a55d6`.
 
 Jina listens at `http://127.0.0.1:8081/v1` and needs no API key. Queries use `Query: ` and conversation chunks use `Document: `. The server uses last-token pooling, 768 dimensions, two CPU threads, and a 4096-token context. asko sends conversation chunks of about 2000 bytes one at a time. The model ID separates its cache from older embeddings. `embedding_url` accepts a local address or the configured OpenRouter URL. Local embedding calls carry no OpenRouter key and consume no OpenRouter budget; remote calls use the key and the shared budget.
 

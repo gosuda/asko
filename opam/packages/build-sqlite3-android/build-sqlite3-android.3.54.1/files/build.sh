@@ -13,7 +13,7 @@ includedir=\${prefix}/include
 
 Name: SQLite
 Description: SQLite library for Android
-Version: 3.53.4
+Version: 3.54.1
 Libs: -L\${libdir} -lsqlite3 -lm -ldl
 Cflags: -I\${includedir}
 EOF
