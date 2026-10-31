@@ -36,7 +36,7 @@ Qwen's JSON mode, configuration-file keys, environment-key precedence, and stric
 
 Iris v0.32 now starts from the original APK in a private mount namespace. The bot ID was read from Iris and saved to both phone and local configuration; the authenticated callback points to asko. SSH root capabilities were restored by removing the launcher's explicit capability drop.
 
-Iris v0.33 support was checked against mock Iris servers only: `/query` failures reported as HTTP 200 with an `error` field are retryable errors and do not advance recovery cursors. The upgrade path of `iris-install-root.sh` was simulated on the PC. It has not yet been installed on the phone.
+Iris v0.33-gosuda.1 was installed on the phone on 2026-10-31 with `deploy-iris-phone.sh`. After the restart, `doctor --online` passed, Iris resolved the bot ID and answered traced `/query` requests, and the 224 MB `iris.log` written by the old launcher moved to `iris.log.1` on the first rotation. The installer recorded an automatic backup. `/query` failures reported as HTTP 200 with an `error` field are tested only against mock Iris servers: they are retryable and do not advance recovery cursors. The upgrade, same-build, rollback and failed-start paths of `iris-install-root.sh` are tested on a simulated device tree; rollback has not been run on the phone.
 
 The conversational path passed a mock tool-call run covering source retrieval, a follow-up to a bot reply, room isolation, and original evidence restoration.
 

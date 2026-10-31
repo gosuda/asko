@@ -4,7 +4,7 @@ Build asko from source on a Linux x86_64 PC and deploy to a rooted Android ARM64
 
 ## Prerequisites
 
-The phone needs Termux, root access (the Iris installer uses Magisk), KakaoTalk signed in to the bot account, and [Iris v0.33](https://github.com/dolidolih/Iris/releases/tag/v0.33). Install Iris with the project script in [Connect Iris](#connect-iris) after deploying asko. The phone needs no OCaml compiler or Linux container. OpenRouter supplies chat and embeddings by default; Go chat and local Jina embeddings are optional.
+The phone needs Termux, root access (the Iris installer uses Magisk), KakaoTalk signed in to the bot account, and [Iris v0.33-gosuda.1](https://github.com/gosuda/Iris/releases/tag/v0.33-gosuda.1) (upstream Iris v0.33 with query tracing and a bounded log). Install Iris with the project script in [Connect Iris](#connect-iris) after deploying asko. The phone needs no OCaml compiler or Linux container. OpenRouter supplies chat and embeddings by default; Go chat and local Jina embeddings are optional.
 
 In Termux, install and start SSH, and note the username from `whoami`:
 
@@ -133,9 +133,17 @@ For local commands, export the variables named by the profile in your shell. A n
 
 ## Connect Iris
 
-Install with `./scripts/deploy-iris-phone.sh asko-phone`. It downloads [Iris v0.33](https://github.com/dolidolih/Iris/releases/tag/v0.33), verifies the published SHA256, and installs the original APK for this text bot. If a different APK is already running, the installer stops that Iris process and starts the new one; the existing Iris configuration is kept. The [upstream installation instructions](https://github.com/dolidolih/Iris#시작하기) describe the `app_process` entry point.
+Install with `./scripts/deploy-iris-phone.sh asko-phone`. It downloads [Iris v0.33-gosuda.1](https://github.com/gosuda/Iris/releases/tag/v0.33-gosuda.1), the gosuda build of [upstream Iris v0.33](https://github.com/dolidolih/Iris/releases/tag/v0.33) with `/query` tracing and a bounded daemon log, and checks its pinned SHA256. The [upstream installation instructions](https://github.com/dolidolih/Iris#시작하기) describe the `app_process` entry point.
 
-The launcher gives Iris a private mount namespace and maps its `/sdcard` view to `/data/local/tmp/asko-iris/private-sdcard`. Its image cleanup stays in that private directory. Other apps keep their normal storage view, and the upstream APK is unchanged. Iris v0.33 copies KakaoTalk databases and extracts its SQLCipher library into a private work directory; the launcher sets `IRIS_WORK_DIR=/data/local/tmp/asko-iris/work` instead of the upstream default `/data/local/tmp/Iris.work`.
+When the APK or launcher differs from the installed one, the installer copies the current APK, launcher and `config.json` to `/data/local/tmp/asko-iris/releases/before-<time>`, stops the running Iris and starts the new build. If the new Iris does not stay up, the previous build is restored automatically. The three newest backups are kept. Running the same build again only makes sure Iris and its firewall rules are up. To return to the previous build manually, run on the phone:
+
+```sh
+su -c '/system/bin/sh /data/data/com.termux/files/home/asko/iris-install/iris-install-root.sh rollback'
+```
+
+The launcher gives Iris a private mount namespace and maps its `/sdcard` view to `/data/local/tmp/asko-iris/private-sdcard`. Its image cleanup stays in that private directory. Other apps keep their normal storage view, and the APK is not modified. Iris v0.33 copies KakaoTalk databases and extracts its SQLCipher library into a private work directory; the launcher sets `IRIS_WORK_DIR=/data/local/tmp/asko-iris/work` instead of the upstream default `/data/local/tmp/Iris.work`.
+
+Iris logs every webhook payload, so its logs contain message text and stay root-only in `/data/local/tmp/asko-iris`. The launcher bounds them: `iris.log` rotates within 500 MiB in total (the current file and four backups of up to 100 MiB), `query.jsonl` holds query timing metadata in four 10 MiB files, and `iris-launch.log` keeps only output from before Iris opens its own log, rotated at 1 MiB.
 
 The launcher blocks external access to Iris on port 3000 and rejects loopback connections from every UID except Termux, for both IPv4 and IPv6. The UID rule requires `--socket-exists` so kernel-generated TCP ACK/RST packets without an owning socket can complete connection teardown. Without this condition, closed client sockets can leave Iris stuck in `LAST_ACK`, causing repeated FIN retransmissions and intermittent connection timeouts despite fast database queries. The launcher installs the replacement before removing copies of its older rule; unrelated firewall rules are preserved. It checks these rules even when Iris is already running and stops Iris if it cannot install them. Iris must keep `botHttpPort` at 3000; the launcher refuses to start it with another port. Iris files and logs stay under the root-owned `/data/local/tmp/asko-iris`. This text-only Iris installer does not configure image delivery or install a boot service; startup after reboot is a separate [opt-in step](#boot-service).
 
