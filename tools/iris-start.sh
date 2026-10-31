@@ -61,6 +61,10 @@ if [ -n "$asko_running_pid" ]; then
     exit 0
 fi
 mkdir -p private-sdcard
-/system/bin/nohup /system/bin/unshare -m /system/bin/sh "$asko_iris/iris-inner.sh" >>iris.log 2>&1 </dev/null &
+# Iris rotates iris.log itself; this file only holds output from before that and native errors.
+if [ -f iris-launch.log ] && [ "$(/system/bin/stat -c %s iris-launch.log)" -gt 1048576 ]; then
+    mv -f iris-launch.log iris-launch.log.1
+fi
+/system/bin/nohup /system/bin/unshare -m /system/bin/sh "$asko_iris/iris-inner.sh" >>iris-launch.log 2>&1 </dev/null &
 printf '%s\n' "$!" >iris.pid
 printf '%s\n' 'Iris launch requested.'

@@ -45,14 +45,15 @@ REMOTE
 )
 # SSH evaluates the command through the remote shell; escape embedded quotes.
 asko_su_quoted=${asko_su//\'/\'\\\'\'}
-asko_iris_version=v0.33
+# gosuda/Iris: upstream v0.33 plus query tracing and a bounded rotating daemon log.
+asko_iris_version=v0.33-gosuda.1
 asko_iris_cache=.cache/iris/$asko_iris_version
 mkdir -p "$asko_iris_cache"
 if [ ! -f "$asko_iris_cache/Iris.apk" ]; then
-    curl -fLsS --retry 2 -o "$asko_iris_cache/Iris.apk.part" "https://github.com/dolidolih/Iris/releases/download/$asko_iris_version/Iris.apk"
+    curl -fLsS --retry 2 -o "$asko_iris_cache/Iris.apk.part" "https://github.com/gosuda/Iris/releases/download/$asko_iris_version/Iris.apk"
     mv "$asko_iris_cache/Iris.apk.part" "$asko_iris_cache/Iris.apk"
 fi
-printf '%s  %s\n' c4f61523ac41353f97c3547e12f32bf3a9819d838c489b2150224a8f1f47932f "$asko_iris_cache/Iris.apk" | sha256sum -c -
+printf '%s  %s\n' 16bfed70f55d06b1553e2de9b923bf8515fdb26b5675fba5f315e66631a3f80f "$asko_iris_cache/Iris.apk" | sha256sum -c -
 ssh -o BatchMode=yes -- "$asko_target" 'umask 077; mkdir -p asko/iris-install'
 scp -q "$asko_iris_cache/Iris.apk" tools/iris-start.sh tools/iris-inner.sh tools/iris-install-root.sh "$asko_target:asko/iris-install/"
 ssh -o BatchMode=yes -- "$asko_target" "env -u LD_PRELOAD -u LD_LIBRARY_PATH '$asko_su_quoted' -c '/system/bin/sh /data/data/com.termux/files/home/asko/iris-install/iris-install-root.sh'"

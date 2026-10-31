@@ -111,7 +111,7 @@ class BootScripts(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(self.rewrite((REPO / relative).read_text()))
         # No download or real Iris installation is allowed in the deploy test.
-        cache = self.repo / ".cache/iris/v0.33"
+        cache = self.repo / ".cache/iris/v0.33-gosuda.1"
         cache.mkdir(parents=True)
         (cache / "Iris.apk").write_text("fixture, not an APK")
         for name in ("iris-start.sh", "iris-inner.sh", "iris-install-root.sh"):
@@ -275,6 +275,77 @@ class BootScripts(unittest.TestCase):
         self.assert_ok(self.run_script())
         self.assert_ok(self.boot("magisk-asko.sh.in"))
         self.assert_ok(self.run_script("scripts/deploy-iris-phone.sh"))
+
+    def iris_install(self, *args):
+        source = self.rewrite((REPO / "tools/iris-install-root.sh").read_text())
+        script = self.root / "iris-install-root.sh"
+        script.write_text(source)
+        env = dict(self.env, ASKO_TEST_UID="0")
+        return subprocess.run(["/bin/sh", str(script), *args], env=env, text=True, capture_output=True, timeout=30)
+
+    def iris_start_fixture(self, starts=True):
+        # Detached like the real launcher so a stopped process is reaped, not left a zombie.
+        launch = (f'nohup {sys.executable} -c "import time; time.sleep(30)" party.qwer.iris.Main >/dev/null 2>&1 &\n'
+                  f'printf "%s\\n" "$!" >"{self.iris}/iris.pid"\n') if starts else ""
+        return (f'pid=$(cat "{self.iris}/iris.pid" 2>/dev/null || :)\n'
+                f'if [ -n "$pid" ] && tr "\\000" " " </proc/$pid/cmdline 2>/dev/null | grep -q party.qwer.iris.Main; then exit 0; fi\n'
+                + launch)
+
+    def iris_pid(self):
+        pid = (self.iris / "iris.pid").read_text().strip()
+        self.addCleanup(lambda: subprocess.run(["kill", "-9", pid], capture_output=True))
+        return pid
+
+    def stage_iris(self, apk, starts=True):
+        stage = self.home / "iris-install"
+        stage.mkdir(exist_ok=True)
+        (stage / "Iris.apk").write_text(apk)
+        (stage / "iris-inner.sh").write_text("inner " + apk)
+        self.executable(stage / "iris-start.sh", self.iris_start_fixture(starts))
+
+    def test_iris_install_backs_up_restarts_and_rolls_back(self):
+        (self.iris / "Iris.apk").write_text("old-apk")
+        (self.iris / "config.json").write_text('{"old":true}')
+        self.executable(self.iris / "iris-start.sh", self.iris_start_fixture())
+        subprocess.run(["/bin/sh", str(self.iris / "iris-start.sh")], check=True)
+        old = self.iris_pid()
+
+        self.stage_iris("new-apk")
+        self.assert_ok(self.iris_install())
+        new = self.iris_pid()
+        self.assertNotEqual(old, new)
+        self.assertFalse(Path(f"/proc/{old}").exists())
+        self.assertTrue(Path(f"/proc/{new}").exists())
+        self.assertEqual((self.iris / "Iris.apk").read_text(), "new-apk")
+        backup = Path((self.iris / "releases/last-backup").read_text().strip())
+        self.assertEqual((backup / "Iris.apk").read_text(), "old-apk")
+        self.assertEqual((backup / "config.json").read_text(), '{"old":true}')
+
+        # The same build again neither restarts Iris nor adds a backup.
+        self.assert_ok(self.iris_install())
+        self.assertEqual((self.iris / "iris.pid").read_text().strip(), new)
+        self.assertEqual(len(list((self.iris / "releases").glob("before-*"))), 1)
+
+        (self.iris / "config.json").write_text('{"rewritten":true}')
+        self.assert_ok(self.iris_install("rollback"))
+        restored = self.iris_pid()
+        self.assertFalse(Path(f"/proc/{new}").exists())
+        self.assertTrue(Path(f"/proc/{restored}").exists())
+        self.assertEqual((self.iris / "Iris.apk").read_text(), "old-apk")
+        self.assertEqual((self.iris / "config.json").read_text(), '{"old":true}')
+
+    def test_iris_install_restores_previous_build_when_new_one_does_not_start(self):
+        (self.iris / "Iris.apk").write_text("old-apk")
+        self.executable(self.iris / "iris-start.sh", self.iris_start_fixture())
+        subprocess.run(["/bin/sh", str(self.iris / "iris-start.sh")], check=True)
+        old = self.iris_pid()
+        self.stage_iris("broken-apk", starts=False)
+        result = self.iris_install()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("restoring the previous build", result.stderr)
+        self.assertFalse(Path(f"/proc/{old}").exists())
+        self.assertEqual((self.iris / "Iris.apk").read_text(), "old-apk")
+        self.assertTrue(Path(f"/proc/{self.iris_pid()}").exists())
 
 
 if __name__ == "__main__":
