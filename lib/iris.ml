@@ -9,8 +9,14 @@ let query t ?(operation="query") sql bindings =
   >|= function
   | Error error -> Error error
   | Ok json ->
-      (match Json_util.protect (fun () -> Json_util.required "data" json |> Json_util.list Fun.id) with
-       | Ok rows -> Ok rows | Error _ -> Error Net.Invalid_json))
+      (* Iris v0.33 reports query failures as HTTP 200 with empty data and an error.
+         Never treat that as an empty result; the message is not logged (it may hold SQL). *)
+      (match Json_util.field "error" json with
+       | Some (`String _) -> Error Net.Remote_error
+       | None | Some `Null ->
+           (match Json_util.protect (fun () -> Json_util.required "data" json |> Json_util.list Fun.id) with
+            | Ok rows -> Ok rows | Error _ -> Error Net.Invalid_json)
+       | Some _ -> Error Net.Invalid_json))
 
 let latest t room =
   query t ~operation:"latest" "SELECT MAX(_id) AS max_id, MIN(created_at) AS first_at FROM chat_logs WHERE chat_id = ?" [room]

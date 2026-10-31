@@ -56,7 +56,7 @@ let () =
   let expected_embedding_auth=ref None in
   let chats=ref 0 and embeddings=ref 0 and deliveries=ref [] and contexts=ref [] in
   let bad_citation=ref false and backend_port=ref None in
-  let fail_second_page=ref false and timeout_second_page=ref false in
+  let fail_second_page=ref false and timeout_second_page=ref false and error_second_page=ref false in
   let stop,wake_stop=Lwt.wait () and mock_stop,wake_mock=Lwt.wait () in
   let cleanup () =
     Store.close store; ignore (Sqlite3.db_close fixture);
@@ -85,6 +85,9 @@ let () =
             Lwt_unix.sleep 0.4 >>= fun ()->response (`Assoc ["data",`List(raw_query fixture sql bindings)])
           else if !fail_second_page && List.length bindings=5 && List.nth bindings 1=`String "200" then
             Cohttp_lwt_unix.Server.respond_string ~status:`Service_unavailable ~body:"{}" ()
+          else if !error_second_page && List.length bindings=5 && List.nth bindings 1=`String "200" then
+            (* Iris v0.33 query failure: HTTP 200, empty data, error message. *)
+            response (`Assoc ["data",`List [];"error",`String "Query failed; request_id=test"])
           else response (`Assoc ["data",`List (raw_query fixture sql bindings)])
       | "/reply" ->
           let room=field "room" json |> Json_util.string and text=field "data" json |> Json_util.string in
@@ -235,6 +238,14 @@ let () =
       let p=Option.get !progress in
       check "recovery failure identifies the exact second page and committed cursor"
         (p.Recovery.operation="recovery" && p.stage="page" && p.page=2 && p.cursor=200L && p.processed=200);
+      fail_second_page:=false;
+      error_second_page:=true;
+      Recovery.room ~config ~store ~iris "1001" >>= fun reported ->
+      check "Iris query error body is a retryable failure, not an empty page"
+        (reported=Error Net.Remote_error && Net.retryable Net.Remote_error
+         && Store.cursor store ~source:config.source_id ~room:"1001"=200L);
+      error_second_page:=false;
+      fail_second_page:=true;
       timeout_second_page:=true;
       let timeout_engine=Engine.create {config with http_timeout=0.15} store in
       Engine.recover timeout_engine "1001" >>= fun timed_out ->
