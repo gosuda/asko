@@ -111,7 +111,7 @@ class BootScripts(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(self.rewrite((REPO / relative).read_text()))
         # No download or real Iris installation is allowed in the deploy test.
-        cache = self.repo / ".cache/iris"
+        cache = self.repo / ".cache/iris/v0.33"
         cache.mkdir(parents=True)
         (cache / "Iris.apk").write_text("fixture, not an APK")
         for name in ("iris-start.sh", "iris-inner.sh", "iris-install-root.sh"):

@@ -1,12 +1,16 @@
 open Lwt.Infix
 
+(* Remote_error: HTTP success whose body reports a failure, e.g. Iris /query `error`. *)
 type error = Timeout | Transport | Http_status of int | Invalid_json | Body_too_large | Source_changed
+  | Remote_error
 exception Limit_exceeded
 let error_name = function
   | Timeout -> "timeout" | Transport -> "transport_error" | Http_status code -> "http_" ^ string_of_int code
   | Invalid_json -> "invalid_json" | Body_too_large -> "body_too_large"
   | Source_changed -> "source_watermark_regressed"
-let retryable = function Timeout | Transport | Http_status 429 -> true
+  | Remote_error -> "remote_error"
+(* Iris v0.32 returned HTTP 500 for query failures; v0.33 reports them in the body. *)
+let retryable = function Timeout | Transport | Http_status 429 | Remote_error -> true
   | Http_status code when code >= 500 -> true | _ -> false
 
 let read_body ~limit body =
