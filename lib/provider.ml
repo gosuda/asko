@@ -11,6 +11,11 @@ let embedding_backend config =
 let chat_headers config session =
   if config.Config.chat_backend="opencode_go" then ["x-opencode-session",session] else []
 
+(* Go accepts only an on/off thinking flag, so reasoning_max_tokens cannot cap thinking
+   there. GLM is excluded because its Go endpoint rejects the flag. *)
+let unbounded_thinking config =
+  config.Config.chat_backend="opencode_go" && not (Config.go_glm config)
+
 let chat_provider config =
   let fields = ["require_parameters",`Bool true;"data_collection",`String "deny"] in
   `Assoc (fields @ if config.Config.chat_provider_only=[] then [] else

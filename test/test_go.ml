@@ -35,7 +35,7 @@ let () =
     check "session stable" (llm.session=(Llm.for_conversation llm "room-1").session);
     check "never leak Go key to separate embedding endpoint"
       (Config.api_key_embed {config with api_key_embed=""}=None);
-    let seen=ref [] and glm=ref false in
+    let seen=ref [] and glm=ref false and thinking=ref "disabled" and max_tokens=ref None in
     let callback _ request body =
       Cohttp_lwt.Body.to_string body >>= fun body->
       let json=Yojson.Safe.from_string body in
@@ -53,8 +53,12 @@ let () =
           if Json_util.field "response_format" json<>None then
             check "GLM uses supported JSON object mode"
               (Json_util.field "response_format" json=Some(`Assoc ["type",`String "json_object"]))
-        end else
-          check "MiMo thinking flag" (Json_util.field "thinking" json=Some (`Assoc ["type",`String "disabled"]))
+        end else begin
+          check ("Go thinking flag " ^ !thinking)
+            (Json_util.field "thinking" json=Some (`Assoc ["type",`String !thinking]));
+          Option.iter (fun n->check (Printf.sprintf "Go output limit %d" n)
+            (Json_util.field "max_tokens" json=Some (`Int n))) !max_tokens
+        end
       end else begin
         check "embedding endpoint" (path="/embed/embeddings");
         check "embedding key" (Cohttp.Header.get headers "authorization"=Some "Bearer embed-key");
@@ -79,5 +83,27 @@ let () =
       check "GLM tool turn works" (Result.is_ok turn);
       Llm.chat glm_llm ~name:"probe" ~schema:(`Assoc []) ~system:"Return JSON" ~user:(`Assoc []) ~max_tokens:64 >>= fun chat->
       check "GLM structured reply works" (chat=Ok (`Assoc ["ok",`Bool true]));
+      glm:=false;
+      let deepseek={config with model="deepseek-v4.1-flash";reasoning_enabled=true;
+        max_output_tokens=1000;reasoning_max_tokens=500} in
+      let deepseek_llm={llm with config=deepseek} in
+      check "DeepSeek thinking is unbounded on Go" (Provider.unbounded_thinking deepseek);
+      check "GLM keeps its thinking handling"
+        (not (Provider.unbounded_thinking {deepseek with model="glm-5.3-flash"}));
+      check "OpenRouter enforces the thinking cap"
+        (not (Provider.unbounded_thinking {deepseek with chat_backend="openrouter"}));
+      thinking:="enabled"; max_tokens:=Some 1500;
+      Llm.turn deepseek_llm ~messages:[] ~tools:[] >>= fun turn->
+      check "DeepSeek answers keep thinking" (Result.is_ok turn);
+      max_tokens:=Some 564;
+      Llm.chat deepseek_llm ~name:"probe" ~schema:(`Assoc []) ~system:"Return JSON" ~user:(`Assoc []) ~max_tokens:64 >>= fun chat->
+      check "DeepSeek structured calls keep thinking by default" (Result.is_ok chat);
+      thinking:="disabled"; max_tokens:=Some 64;
+      Llm.chat deepseek_llm ~skip_unbounded_thinking:true ~name:"asko_answer_audit" ~schema:(`Assoc [])
+        ~system:"Return JSON" ~user:(`Assoc []) ~max_tokens:64 >>= fun chat->
+      check "DeepSeek audit runs without thinking" (Result.is_ok chat);
+      max_tokens:=Some 1000;
+      Context_window.notes ~llm:deepseek_llm ~request:"task" [] >>= fun _->
+      check "DeepSeek context notes run without thinking" (List.length !seen=9);
       Lwt.return_unit)
       (fun ()->Lwt.wakeup_later wake ();server)))

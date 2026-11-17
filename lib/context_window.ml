@@ -63,6 +63,7 @@ let notes_key ~config ~request messages =
     "model",`String config.Config.model;"endpoint",`String config.openrouter_url;
     "backend",`String config.chat_backend;"providers",Llm.strings config.chat_provider_only;
     "response_format",`String config.response_format;"reasoning",`Bool config.reasoning_enabled;
+    "thinking",`Bool (Llm.reasoning_enabled ~skip_unbounded_thinking:true config);
     "reasoning_tokens",`Int config.reasoning_max_tokens;"output_tokens",`Int config.max_output_tokens;
     "messages",`List(List.map context messages)]
   |> Json_util.to_string |> Digest.BLAKE256.string |> Digest.BLAKE256.to_hex
@@ -72,7 +73,8 @@ let notes ?feedback ~llm ~request messages =
     "\n\nThe previous output failed validation: " ^ reason ^
     ". Regenerate this batch from the originals. Return only facts, each with text and sources. " ^
     "sources must contain 1 to 12 valid zero-based row numbers; do not add other fields.") in
-  Llm.chat llm ~name:"asko_context_notes" ~schema:(notes_schema(List.length messages)) ~system
+  Llm.chat llm ~skip_unbounded_thinking:true ~name:"asko_context_notes"
+    ~schema:(notes_schema(List.length messages)) ~system
     ~user:(`Assoc ["task",`String request;"messages",`List(List.mapi(fun row m->
       `Assoc(("row",`Int row)::Json_util.object_(context m))) messages)])
     ~max_tokens:llm.Llm.config.max_output_tokens >|= function
@@ -114,7 +116,7 @@ General knowledge and creative work do not need this synchronization qualificati
 Reject citation footers, evidence timestamps, source IDs, and Markdown citation markers in
 the reply. Actual event times requested by the user and useful URLs are fine.
 If unsupported, explain the specific corrections in issues, without inventing new facts.|} in
-  Llm.chat llm ~name:"asko_answer_audit" ~schema:audit_schema ~system
+  Llm.chat llm ~skip_unbounded_thinking:true ~name:"asko_answer_audit" ~schema:audit_schema ~system
     ~user:(`Assoc ["request",`String request;"answer",`String answer;
       "coverage",coverage;"original_messages",`List(List.map context messages);
       "extracted_notes",`List notes]) ~max_tokens:1500 >|= function
