@@ -6,11 +6,12 @@ type t = {
   name_refresh : (string,float) Hashtbl.t;
   sync_failures : (string,Yojson.Safe.t) Hashtbl.t;
   mutable room_labels : (string * string option) list option;
+  indexed : (string,int64) Hashtbl.t;
 }
 let create config store = {
   config; store; iris=Iris.create config; llm=Llm.create config store;
   recovery_lock=Lwt_mutex.create (); name_refresh=Hashtbl.create 8;sync_failures=Hashtbl.create 8; next_send_at=Store.last_send_at store +. config.Config.send_interval;
-  room_labels=None;
+  room_labels=None; indexed=Hashtbl.create 8;
 }
 let log event code =
   prerr_endline (Json_util.to_string (`Assoc ["event",`String event;"code",`String code]))
@@ -201,11 +202,38 @@ let other_rooms t room =
        labels)
   >|= List.filter (fun (id,_)->id<>room)
 
+(* Embed finished chunks ahead of the first search. Only rooms with new
+   messages since the last pass are loaded. *)
+let preindex t room =
+  if Config.api_key_embed t.config=None && not(Config.local_embeddings t.config) then Lwt.return_unit else
+  let source=t.config.source_id in
+  let latest=Store.one t.store {|SELECT MAX(seq) FROM messages WHERE source=? AND room_id=?
+    AND is_bot=0 AND deleted=0 AND is_command=0|} [Store.text source;Store.text room]
+    (fun s->Store.optional_int64 s 0) |> Option.join in
+  match latest with
+  | None -> Lwt.return_unit
+  | Some seq when Hashtbl.find_opt t.indexed room=Some seq -> Lwt.return_unit
+  | Some seq ->
+      let now=Unix.gettimeofday () in
+      let since=now -. float_of_int (t.config.retention_days*86400) in
+      let range={source;room_id=room;lower=At_time since;before_seq=Int64.max_int;
+        through_time=now+.60.;retention_start=since;note=None} in
+      (match Store.messages ~max_bytes:t.config.max_history_bytes t.store range with
+       | exception Store.History_too_large -> Lwt.return_unit
+       | messages ->
+           let messages=Store.with_speaker_names t.store ~source ~room messages in
+           let version=Store.room_version t.store ~source ~room in
+           Telemetry.with_trace ~kind:"index" ~fields:["room_id",`String room] (fun ()->
+             Retrieval.index ~closed_only:true ~config:t.config ~store:t.store ~llm:t.llm ~range ~version messages)
+           >|= function
+           | Ok _ -> Hashtbl.replace t.indexed room seq
+           | Error error -> log "preindex_failed" (Llm.error_name error))
+
 let process_job_body t (job:Store.job) =
   let active_sync=ref None and request_sync_errors=ref [] in
   let request=job.invocation.message in
   if request.source<>t.config.source_id || not (Config.allowed t.config request.room_id) || request.deleted || request.is_bot
-     || job.invocation.trigger<>Mention || Trigger.detect ~bot_id:t.config.bot_id request=None then
+     || job.invocation.trigger=Slash || Ingest.invocation ~config:t.config ~store:t.store request=None then
     (Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:false ~reason:"scope_changed"; Lwt.return_unit)
   else if job.attempts>3 then
     source_changed_notice t job
@@ -343,8 +371,10 @@ let run ?on_ready ~stop t =
     ignore (Store.purge t.store ~before:(Unix.gettimeofday () -. float_of_int (t.config.retention_days*86400)));
     Lwt.return_unit in
   let reconciliation () = Lwt_list.iter_s (fun room -> reconcile t room >|= fun _->()) t.config.rooms in
+  let indexing () = Lwt_list.iter_s (preindex t) t.config.rooms in
   let workers=List.init t.config.job_workers (fun _->supervise "job_worker" jobs 0.2 ()) @
               [supervise "sender" (fun ()->send_tick t) 0.5 ();
+               supervise "indexer" indexing 60. ();
                supervise "recovery" recovery t.config.recovery_interval (); supervise "retention" maintenance 60. ();
                (Lwt_unix.sleep t.config.reconcile_interval >>= supervise "reconcile" reconciliation t.config.reconcile_interval)] in
   Lwt.finalize

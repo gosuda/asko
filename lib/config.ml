@@ -46,6 +46,7 @@ type t = {
   job_workers : int;
   failure_detail : string;
   cross_room_read : bool;
+  reply_trigger : bool;
 }
 
 let default = {
@@ -65,6 +66,7 @@ let default = {
   allow_insecure_loopback=false;
   search_url="https://api.parallel.ai"; search_api_key=""; search_api_key_env="PARALLEL_API_KEY";
   answer_audit="room_claims"; job_workers=3; failure_detail="brief"; cross_room_read=false;
+  reply_trigger=true;
 }
 
 let go_glm config =
@@ -125,6 +127,7 @@ let of_json ?(require_credentials=true) json = Json_util.protect (fun () ->
     job_workers=i "job_workers" d.job_workers;
     failure_detail=s "failure_detail" d.failure_detail;
     cross_room_read=b "cross_room_read" d.cross_room_read;
+    reply_trigger=b "reply_trigger" d.reply_trigger;
   } in
   if List.exists (fun provider -> String.trim provider="" || String.trim provider<>provider) c.chat_provider_only
   then invalid "chat_provider_only must contain nonblank provider slugs without surrounding whitespace";

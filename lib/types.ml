@@ -13,7 +13,8 @@ type message = {
   deleted : bool;
 }
 
-(* Reply and Slash remain readable for older persisted jobs only. *)
+(* Reply is a quoted reply to a bot message without a mention. Slash remains
+   readable for older persisted jobs only. *)
 type trigger = Mention | Reply | Slash
 type invocation = { message : message; trigger : trigger; prompt : string }
 type scope = Today | Since_previous | From_reply | Recent | Retained | Last_minutes of int

@@ -94,7 +94,11 @@ let notes ?feedback ~llm ~request messages =
         `Assoc ["text",`String text;"sources",Llm.strings(List.map(Array.get ids) rows |> List.sort_uniq String.compare)])) with Ok facts->Ok facts
       | Error reason->Error(Llm.Bad_response {stage="context_notes";reason}))
 
+(* The category is logged without the issue text, so rejections can be counted by cause. *)
+let audit_categories=["none";"unsupported_claim";"coverage_overclaim";"wrong_request";
+  "missing_qualification";"format";"other"]
 let audit_schema=Llm.object_schema ["supported",`Assoc ["type",`String "boolean"];
+  "category",Llm.enum audit_categories;
   "issues",Llm.string_schema]
 
 let audit ~web ~llm ~request ~answer ~coverage ~messages ~notes =
@@ -118,14 +122,19 @@ only stored records could be checked; reject assertions that no conversation occ
 General knowledge and creative work do not need this synchronization qualification.
 Reject citation footers, evidence timestamps, source IDs, and Markdown citation markers in
 the reply. Actual event times requested by the user and useful URLs are fine.
-If unsupported, explain the specific corrections in issues, without inventing new facts.|} in
+If unsupported, explain the specific corrections in issues, without inventing new facts.
+category names the main problem: none when supported, otherwise unsupported_claim,
+coverage_overclaim, wrong_request, missing_qualification, format or other.|} in
   Llm.chat llm ~skip_unbounded_thinking:true ~name:"asko_answer_audit" ~schema:audit_schema ~system
-    ~user:(`Assoc ["request",`String request;"answer",`String answer;
-      "coverage",coverage;"original_messages",`List(List.map context messages);
-      "extracted_notes",`List notes;"web_sources",Llm.strings web]) ~max_tokens:1500 >|= function
+    (* The records come first so that a second check of a corrected draft reuses the provider's prompt cache. *)
+    ~user:(`Assoc ["original_messages",`List(List.map context messages);
+      "extracted_notes",`List notes;"web_sources",Llm.strings web;"coverage",coverage;
+      "request",`String request;"answer",`String answer]) ~max_tokens:1500 >|= function
   | Error(Llm.Bad_response {reason;_})->Error(Llm.Bad_response {stage="answer_audit";reason})
   | Error error->Error error
   | Ok json -> (match Json_util.protect (fun ()->
+      let category=match Json_util.field "category" json with
+        | Some(`String value) when List.mem value audit_categories->value | _->"other" in
       Json_util.required "supported" json |> Json_util.bool,
-      Json_util.required "issues" json |> Json_util.string) with
+      Json_util.required "issues" json |> Json_util.string,category) with
       | Ok result->Ok result | Error reason->Error(Llm.Bad_response {stage="answer_audit";reason}))

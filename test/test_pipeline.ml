@@ -280,6 +280,14 @@ let () =
       Retrieval.index ~config ~store ~llm ~range ~version history >>= fun indexed ->
       check "backfill resumes without rebilling completed chunks"
         (Result.is_ok indexed && !embeddings=before_backfill);
+      Retrieval.index ~closed_only:true ~config ~store ~llm ~range ~version history >>= fun closed ->
+      check "background indexing leaves the still-growing newest chunk alone"
+        (match indexed,closed with Ok(all,_),Ok(finished,_)->Array.length finished=Array.length all-1 | _->false);
+      let indexer=Engine.create config store in
+      Engine.preindex indexer "1001" >>= fun () ->
+      let after_first_pass= !embeddings in
+      Engine.preindex indexer "1001" >>= fun () ->
+      check "background indexing skips a room without new messages" (!embeddings=after_first_pass);
       let request={Types.message={m with seq=209L;created_at=now};trigger=Types.Mention;prompt="postgres"} in
       let capped={config with max_tool_rounds=1} in
       let calls_before= !chats in

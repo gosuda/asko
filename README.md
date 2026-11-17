@@ -13,11 +13,12 @@ Select the bot account in KakaoTalk's mention picker. The name below is an examp
 @요약봇 오늘 중요한거
 @요약봇 아까 postgres 얘기 결론 뭐임
 [메시지에 답장하면서] @요약봇 이 얘기 결론 어떻게 됐어?
+[봇의 답에 답장하면서] 두 번째 항목만 더 자세히
 @요약봇 최근 2시간 대화 정리해줘
 @요약봇 OCaml 최신 버전 뭐야? 릴리스 노트도 찾아줘
 ```
 
-The bot decides what each request needs. It can read and search earlier messages, search the web, and open links. Each room's history stays separate unless `cross_room_read` is enabled.
+The bot decides what each request needs. It can read and search earlier messages, search the web, and open links. Each room's history stays separate unless `cross_room_read` is enabled. A KakaoTalk reply to one of the bot's own messages reaches the bot without a mention.
 
 ## Setup
 
@@ -93,6 +94,7 @@ Web search uses [Parallel](https://parallel.ai). Put the key in `PARALLEL_API_KE
 | `answer_audit` | `room_claims` | Grounding check for answers about the room; `always` or `off` |
 | `failure_detail` | `brief` | Failure message sent to the room; `json` sends the full diagnostic |
 | `cross_room_read` | `false` | Let the bot read other rooms in `rooms` when asked |
+| `reply_trigger` | `true` | Treat a reply to a bot message as a request, without a mention |
 | `search_url` | `https://api.parallel.ai` | Parallel API base URL |
 
 See [implementation notes](docs/implementation.md) for conversation handling, recovery, and validation limits. Clean-machine installation and phone reboot behavior remain unverified.

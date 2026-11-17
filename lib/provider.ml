@@ -33,6 +33,8 @@ let embedding_dimensions config =
   then Some 3072 else None
 
 let embedding_batch_size config = if embedding_backend config=Jina then 1 else 16
+(* Remote batches run side by side; a local model on the phone gets one at a time. *)
+let embedding_concurrency config = if Config.local_embeddings config then 1 else 4
 
 (* Keep existing cache IDs for legacy wire formats. A newly selected format at
    the same model/URL must not consume vectors made from differently prefixed text. *)

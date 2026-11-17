@@ -102,6 +102,11 @@ let compact ~budget turns =
 type result = { answer : Llm.answer; evidence_messages : message list;
   input_messages : message list; coverage : Yojson.Safe.t; web_sources : (string*string) list }
 
+(* Every tool result is resent on each later turn. A search returns its best eight
+   chunks, and a read returns one page; read_period alone may fill the context. *)
+let search_bytes=48000
+let page_bytes=64000
+
 let prompt={|You are an agent living in this KakaoTalk room. Follow the CURRENT user's request
 naturally in Korean, and decide for yourself what you need: answer from your own knowledge,
 look at the room's messages, or look things up on the web. Do not turn every question into a
@@ -336,7 +341,7 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
          | Ok(scope,messages,_) ->
              room_used:=true;
              let available=filter messages args in
-             let selected,remaining=Context_window.page ~bytes:!tool_bytes ~limit:max_int available in
+             let selected,remaining=Context_window.page ~bytes:(min !tool_bytes page_bytes) ~limit:max_int available in
              if selected=[] && remaining<>[] then Lwt.return(Error(Llm.Limit_exceeded {
                resource="tool_context_bytes";actual=None;limit= !tool_bytes}))
              else output ?room:(if scope.room_id=range.room_id then None else Some scope.room_id)
@@ -351,12 +356,12 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
          | Error reason -> Lwt.return(Ok(`Assoc ["error",`String reason]))
          | Ok(scope,messages,version) ->
              room_used:=true;
-             Retrieval.select ~corpus:messages ~config ~store ~llm ~range:scope ~version
+             Retrieval.select ~corpus:messages ~limit:8 ~config ~store ~llm ~range:scope ~version
                ~topic:query ~focus:Overview (filter messages args) >>= (function
              | Error error->Lwt.return(Ok(`Assoc ["error",`String(Llm.error_name error);
                  "hint",`String "Use read_messages to inspect originals; search failure does not mean no messages."]))
              | Ok result ->
-                 let selected,remaining=Context_window.page ~bytes:!tool_bytes ~limit:max_int result.messages in
+                 let selected,remaining=Context_window.page ~bytes:(min !tool_bytes search_bytes) ~limit:max_int result.messages in
                  output ?room:(if scope.room_id=range.room_id then None else Some scope.room_id)
                    selected remaining (List.length result.messages) >|= fun json->
                  Ok(`Assoc(Json_util.object_ json @ ["search_note",Json_util.option (fun x->`String x) result.note;
@@ -429,13 +434,14 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
     else call (fun ()->Context_window.audit ~web:(List.map fst !web) ~llm ~request:task ~answer:answer.answer_text
       ~coverage:(coverage ()) ~messages:audit_messages ~notes:!notes) >>= function
     | Error error->Lwt.return(Error error)
-    | Ok(true,_) ->
+    | Ok(true,_,_) ->
         trace "answer_grounded" ["coverage",coverage ();"model_calls",`Int !calls];
         Lwt.return(complete ())
-    | Ok(false,_) when revisions>=2 -> Lwt.return(Error(Llm.Bad_response {
+    | Ok(false,_,_) when revisions>=2 -> Lwt.return(Error(Llm.Bad_response {
         stage="answer_grounding";reason="answer remained unsupported after correction"}))
-    | Ok(false,issues) ->
-        trace "answer_revision" ["revision",`Int(revisions+1)];
+    | Ok(false,issues,category) ->
+        trace "answer_revision" ["revision",`Int(revisions+1);"category",`String category];
+        Telemetry.emit "answer_revision" ["revision",`Int(revisions+1);"category",`String category];
         loop (revisions+1) (turns @ [`Assoc ["role",`String "user";
           "content",`String(Json_util.to_string (`Assoc ["grounding_check",`String issues;
             "instruction",`String "Correct the draft using original evidence and the current request, then call respond again.";
