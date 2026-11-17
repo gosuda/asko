@@ -67,6 +67,8 @@ GLM replies are validated locally against the requested schema. The Go GLM endpo
 
 The [advanced Go example](examples/config.opencode-go.json) retains `max_output_tokens: 16000` and `reasoning_max_tokens: 8192`: 24,192 total tokens for answers and context notes. Go shares this total between thinking and the final response; the headroom does not enforce a separate thinking limit. Context planning and answer auditing use smaller task-specific output budgets with the same headroom.
 
+Other Go models, such as `deepseek-v4.1-flash`, receive `thinking: enabled` when `reasoning_enabled` is true. Go cannot cap their thinking, which could otherwise consume an entire audit or notes budget before any JSON was returned. asko therefore sends `thinking: disabled` without the extra headroom for context notes and answer audits on these models; answers and context planning keep thinking.
+
 ### Optional local Jina
 
 Generate a separate configuration with `./scripts/dev dune exec asko -- init --config config.jina.json --profile local-jina`, or see the [Jina example](examples/config.local-jina.json). Chat still uses OpenRouter and `OPENROUTER_API_KEY`; embeddings use `embedding_backend: "jina"` at `http://127.0.0.1:8081/v1` with `jina-v5-nano-retrieval-q8`, without an embedding key. Follow the [local Jina installation steps](docs/android.md#optional-local-jina) before starting it on the phone; `init` only writes configuration.

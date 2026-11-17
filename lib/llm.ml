@@ -111,13 +111,20 @@ let turn t ~messages ~tools =
       `Assoc fields) with Ok message->Ok message | Error reason->Error (Bad_response {stage="chat_completion";reason}))
 )
 
-let chat t ~name ~schema ~system ~user ~max_tokens =
+(* Verdict-style tasks pass ~skip_unbounded_thinking: without a thinking cap, a model can
+   spend the whole output budget thinking and return no JSON. *)
+let reasoning_enabled ?(skip_unbounded_thinking=false) config =
+  config.Config.reasoning_enabled
+  && not (skip_unbounded_thinking && Provider.unbounded_thinking config)
+
+let chat ?skip_unbounded_thinking t ~name ~schema ~system ~user ~max_tokens =
   let stage=match name with "asko_context_plan"->"context_plan" | "asko_context_notes"->"context_notes"
     | "asko_answer_audit"->"answer_audit" | "asko_summary"->"summary" | _->"structured_generation" in
   Telemetry.result ~error:error_name stage (fun ()->
-  let reasoning, max_tokens = if t.config.reasoning_enabled then
-    `Assoc ["enabled",`Bool true;"max_tokens",`Int t.config.reasoning_max_tokens],
-    max_tokens+t.config.reasoning_max_tokens
+  let config={t.config with reasoning_enabled=reasoning_enabled ?skip_unbounded_thinking t.config} in
+  let reasoning, max_tokens = if config.reasoning_enabled then
+    `Assoc ["enabled",`Bool true;"max_tokens",`Int config.reasoning_max_tokens],
+    max_tokens+config.reasoning_max_tokens
     else `Assoc ["enabled",`Bool false], max_tokens in
   let system, response_format =
     if t.config.response_format="json_object" then
@@ -135,7 +142,7 @@ let chat t ~name ~schema ~system ~user ~max_tokens =
       `Assoc ["role",`String "user";"content",`String (Json_util.to_string user)]];
     "response_format", response_format;
   ] in
-  let body=`Assoc (Json_util.object_ body @ chat_options t.config reasoning) in
+  let body=`Assoc (Json_util.object_ body @ chat_options config reasoning) in
   call t ~output_tokens:max_tokens ~path:"/chat/completions" body >|= function
   | Error error -> Error error
   | Ok json ->
