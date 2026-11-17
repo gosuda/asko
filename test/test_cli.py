@@ -61,7 +61,7 @@ class OnboardingCLI(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.config = self.root / "config.json"
         self.env = dict(os.environ)
-        for name in ("OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "ASKO_EMBEDDING_API_KEY", "ASKO_INGEST_TOKEN"):
+        for name in ("OPENROUTER_API_KEY", "OPENCODE_GO_API_KEY", "ASKO_EMBEDDING_API_KEY", "PARALLEL_API_KEY", "ASKO_INGEST_TOKEN"):
             self.env.pop(name, None)
 
     def run_cli(self, *args, expected=0, config=None):

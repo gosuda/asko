@@ -122,6 +122,7 @@ unset asko_key
 | OpenRouter chat and default embeddings | `secrets/openrouter.key` | `OPENROUTER_API_KEY` | Variable is unset or empty |
 | OpenCode Go chat | `secrets/opencode-go.key` | `OPENCODE_GO_API_KEY` | Variable is unset only |
 | Separate remote embeddings (Go preset) | `secrets/embedding.key` | `ASKO_EMBEDDING_API_KEY` | Variable is unset only |
+| Web search (Parallel) | `secrets/parallel.key` | `PARALLEL_API_KEY` | Variable is unset only |
 
 For Go, repeat the prompt/write steps with `secrets/opencode-go.key` for the Go key and `secrets/embedding.key` for an OpenRouter key. Set `chat_backend` to `opencode_go`, `chat_url` to `https://opencode.ai/zen/go/v1`, `model` to `glm-5.3-flash`, `response_format` to `json_object`, and `api_key_env` to `OPENCODE_GO_API_KEY`; keep remote embeddings on OpenRouter and set `api_key_embed_env` to `ASKO_EMBEDDING_API_KEY`. The [Go preset](../examples/config.opencode-go.json) shows these fields together, with larger optional token budgets.
 

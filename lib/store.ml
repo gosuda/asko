@@ -94,7 +94,7 @@ let open_ path =
      exec t "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL";
      (match count t "PRAGMA user_version" [] with
       | 0 -> transaction t (fun () -> exec t schema)
-      | 1 | 2 | 3 | 4 | 5 | 6 -> ()
+      | 1 | 2 | 3 | 4 | 5 | 6 | 7 -> ()
       | _ -> raise (Error "database schema is newer than this program"));
      if count t "PRAGMA user_version" [] = 1 then
        transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN snapshot_version INTEGER; PRAGMA user_version=2");
@@ -125,6 +125,9 @@ let open_ path =
            PRIMARY KEY(job_id,cache_key));
          PRAGMA user_version=6;
        |});
+     if count t "PRAGMA user_version" [] = 6 then
+       transaction t (fun () -> exec t
+         "ALTER TABLE jobs ADD COLUMN progress_sent INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=7");
      exec t "CREATE INDEX IF NOT EXISTS messages_retention ON messages(created_at)";
      t
    with exn -> ignore (Sqlite3.db_close t.db); raise exn)
@@ -137,6 +140,11 @@ let job_model_calls t job_id =
   count t "SELECT model_calls FROM jobs WHERE id=?" [integer job_id]
 let reserve_model_call t ~job_id ~limit =
   run t "UPDATE jobs SET model_calls=model_calls+1 WHERE id=? AND model_calls<?"
+    [integer job_id;integer(Int64.of_int limit)];
+  Sqlite3.changes t.db=1
+(* Progress lines are counted per job, across retries and restarts. *)
+let reserve_progress t ~job_id ~limit =
+  run t "UPDATE jobs SET progress_sent=progress_sent+1 WHERE id=? AND progress_sent<?"
     [integer job_id;integer(Int64.of_int limit)];
   Sqlite3.changes t.db=1
 
@@ -257,8 +265,10 @@ let invalidate_message t ~source ~room ~seq =
       match dependency_ids value with Ok ids->List.mem (Int64.to_string seq) ids | Error _->true in
     if affected then run t "DELETE FROM embeddings WHERE source=? AND room_id=? AND cache_key=? AND model=?"
       [text source;text room;text key;text model]) embeddings;
+  (* An answer can cite another enabled room, so match evidence across the source. *)
   let outputs=rows t {|SELECT id,job_id,state,evidence FROM outbox
-    WHERE source=? AND room_id=? AND snapshot_version IS NOT NULL AND body<>''|}
+    WHERE source=? AND snapshot_version IS NOT NULL AND body<>''
+    AND (room_id=? OR evidence IS NOT NULL)|}
     [text source;text room] (fun s->Sqlite3.column_int64 s 0,Sqlite3.column_int64 s 1,
       Sqlite3.column_text s 2,optional_text s 3) in
   List.iter (fun (id,job,state,evidence) ->
@@ -372,8 +382,13 @@ let enqueue t ~now ~(config : Config.t) (invocation : invocation) =
 
 let claim_job t ~now = transaction t (fun () ->
   run t "UPDATE jobs SET state='expired' WHERE state='queued' AND expires_at<=?" [real now];
-  match one t {|SELECT id,source,request_seq,trigger,prompt,attempts,expires_at FROM jobs
-    WHERE state='queued' AND available_at<=? ORDER BY id LIMIT 1|} [real now]
+  (* Workers run in parallel, but one requester's jobs in a room stay in order. *)
+  match one t {|SELECT j.id,j.source,j.request_seq,j.trigger,j.prompt,j.attempts,j.expires_at FROM jobs j
+    JOIN messages jm ON jm.source=j.source AND jm.seq=j.request_seq
+    WHERE j.state='queued' AND j.available_at<=? AND NOT EXISTS (
+      SELECT 1 FROM jobs r JOIN messages rm ON rm.source=r.source AND rm.seq=r.request_seq
+      WHERE r.state='running' AND rm.source=jm.source AND rm.room_id=jm.room_id AND rm.sender_id=jm.sender_id)
+    ORDER BY j.id LIMIT 1|} [real now]
     (fun s -> (Sqlite3.column_int64 s 0, Sqlite3.column_text s 1, Sqlite3.column_int64 s 2,
                Sqlite3.column_text s 3, Sqlite3.column_text s 4, Sqlite3.column_int s 5, Sqlite3.column_double s 6)) with
   | None -> None

@@ -39,6 +39,13 @@ type t = {
   api_key_embed_env : string;
   ingest_token_env : string;
   allow_insecure_loopback : bool;
+  search_url : string;
+  search_api_key : string;
+  search_api_key_env : string;
+  answer_audit : string;
+  job_workers : int;
+  failure_detail : string;
+  cross_room_read : bool;
 }
 
 let default = {
@@ -47,7 +54,7 @@ let default = {
   iris_url="http://127.0.0.1:3000"; bot_id=""; rooms=[];
   dry_run=true; retention_days=7; recovery_interval=30.; reconcile_interval=1800.; request_ttl=1800.;
   cooldown=0.; http_timeout=600.; send_interval=1.; confirm_timeout=15.;
-  max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=64; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
+  max_input_bytes=1000000; max_history_bytes=8000000; max_tool_rounds=96; max_response_bytes=12000; max_output_tokens=4000; daily_budget_tokens=50000000;
   openrouter_url="https://openrouter.ai/api/v1";
   chat_backend="openrouter"; chat_provider_only=[];
   model="google/gemini-3.5-flash-lite"; reasoning_enabled=true; reasoning_max_tokens=2048; response_format="json_schema";
@@ -56,6 +63,8 @@ let default = {
   api_key=""; api_key_embed=""; api_key_env="OPENROUTER_API_KEY"; ingest_token_env="ASKO_INGEST_TOKEN";
   api_key_embed_env="";
   allow_insecure_loopback=false;
+  search_url="https://api.parallel.ai"; search_api_key=""; search_api_key_env="PARALLEL_API_KEY";
+  answer_audit="room_claims"; job_workers=3; failure_detail="brief"; cross_room_read=false;
 }
 
 let go_glm config =
@@ -109,6 +118,13 @@ let of_json ?(require_credentials=true) json = Json_util.protect (fun () ->
     api_key_embed_env=s "api_key_embed_env" d.api_key_embed_env;
     ingest_token_env=s "ingest_token_env" d.ingest_token_env;
     allow_insecure_loopback=b "allow_insecure_loopback" d.allow_insecure_loopback;
+    search_url=s "search_url" d.search_url;
+    search_api_key=String.trim (s "search_api_key" d.search_api_key);
+    search_api_key_env=s "search_api_key_env" d.search_api_key_env;
+    answer_audit=s "answer_audit" d.answer_audit;
+    job_workers=i "job_workers" d.job_workers;
+    failure_detail=s "failure_detail" d.failure_detail;
+    cross_room_read=b "cross_room_read" d.cross_room_read;
   } in
   if List.exists (fun provider -> String.trim provider="" || String.trim provider<>provider) c.chat_provider_only
   then invalid "chat_provider_only must contain nonblank provider slugs without surrounding whitespace";
@@ -125,7 +141,11 @@ let of_json ?(require_credentials=true) json = Json_util.protect (fun () ->
   if c.request_ttl <= 0. || c.http_timeout <= 0. || c.recovery_interval < 1. || c.reconcile_interval < 60.
      || c.send_interval < 0.2 || c.cooldown < 0. || c.confirm_timeout <= 0.
   then invalid "invalid timing configuration";
-  if c.max_tool_rounds < 1 || c.max_tool_rounds > 64 then invalid "max_tool_rounds must be 1..64";
+  if c.max_tool_rounds < 1 || c.max_tool_rounds > 128 then invalid "max_tool_rounds must be 1..128";
+  if not (List.mem c.answer_audit ["room_claims";"always";"off"])
+  then invalid "answer_audit must be room_claims, always, or off";
+  if c.job_workers < 1 || c.job_workers > 8 then invalid "job_workers must be 1..8";
+  if not (List.mem c.failure_detail ["brief";"json"]) then invalid "failure_detail must be brief or json";
   if c.max_input_bytes < 1000 || c.max_input_bytes > 2000000
      || c.max_history_bytes < c.max_input_bytes || c.max_history_bytes > 16000000
      || c.max_output_tokens < 100 || c.max_output_tokens > 16000
@@ -142,6 +162,7 @@ let of_json ?(require_credentials=true) json = Json_util.protect (fun () ->
   in
   valid_url ~https:false c.iris_url;
   valid_url ~https:true c.openrouter_url;
+  valid_url ~https:true c.search_url;
   let local_embed=List.mem (Uri.host (Uri.of_string c.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"] in
   valid_url ~https:(not local_embed) c.embedding_url;
   if not (List.mem c.chat_backend ["openrouter";"opencode_go"]) then invalid "invalid chat_backend";
@@ -150,6 +171,7 @@ let of_json ?(require_credentials=true) json = Json_util.protect (fun () ->
   let valid_env value = value="" || (String.for_all (function 'a'..'z'|'A'..'Z'|'0'..'9'|'_'->true|_->false) value
     && (match value.[0] with '0'..'9'->false|_->true)) in
   if not(valid_env c.api_key_embed_env) then invalid "api_key_embed_env must be an environment variable name";
+  if not(valid_env c.search_api_key_env) then invalid "search_api_key_env must be an environment variable name";
   if require_credentials && not local_embed
      && c.embedding_url<>c.openrouter_url
      && String.trim c.api_key_embed=""
@@ -181,6 +203,9 @@ let api_key_embed config =
       let key=String.trim config.api_key_embed in
       if key<>"" then Some key
       else if config.api_key_embed_env="" && config.embedding_url=config.openrouter_url then api_key config else None
+let search_key config = match env_value config.search_api_key_env with
+  | Some _ as value -> value
+  | None -> if config.search_api_key="" then None else Some config.search_api_key
 let ingest_token config = env_value config.ingest_token_env
 let local_embeddings config =
   List.mem (Uri.host (Uri.of_string config.embedding_url)) [Some "127.0.0.1";Some "localhost";Some "::1"]

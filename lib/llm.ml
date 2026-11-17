@@ -89,9 +89,10 @@ let call t ~output_tokens ~path body =
 let chat_provider = Provider.chat_provider
 let chat_options = Provider.chat_options
 
-let turn t ~messages ~tools =
+(* boost adds output headroom for one retry after a length-truncated turn. *)
+let turn ?(boost=0) t ~messages ~tools =
   Telemetry.result ~error:error_name "answer_generation" (fun ()->
-  let output=t.config.max_output_tokens + (if t.config.reasoning_enabled then t.config.reasoning_max_tokens else 0) in
+  let output=t.config.max_output_tokens + (if t.config.reasoning_enabled then t.config.reasoning_max_tokens else 0) + boost in
   let reasoning=if t.config.reasoning_enabled then
     `Assoc ["enabled",`Bool true;"max_tokens",`Int t.config.reasoning_max_tokens]
     else `Assoc ["enabled",`Bool false] in

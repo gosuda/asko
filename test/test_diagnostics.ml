@@ -5,9 +5,16 @@ let check name ok = if not ok then failwith name else Printf.printf "ok: %s\n%!"
 let field = Json_util.required
 let () =
   let defaults=Config.of_json (`Assoc []) |> Result.get_ok in
-  check "larger defaults" (defaults.max_input_bytes=1000000 && defaults.max_history_bytes=8000000 && defaults.max_tool_rounds=64);
+  check "larger defaults" (defaults.max_input_bytes=1000000 && defaults.max_history_bytes=8000000 && defaults.max_tool_rounds=96);
   List.iter (fun n -> check "invalid round cap rejected"
-    (Result.is_error (Config.of_json (`Assoc ["max_tool_rounds",`Int n])))) [0;65];
+    (Result.is_error (Config.of_json (`Assoc ["max_tool_rounds",`Int n])))) [0;129];
+  check "agent settings are validated"
+    (defaults.answer_audit="room_claims" && defaults.job_workers=3 && defaults.failure_detail="brief"
+     && not defaults.cross_room_read
+     && Result.is_error (Config.of_json (`Assoc ["answer_audit",`String "sometimes"]))
+     && Result.is_error (Config.of_json (`Assoc ["job_workers",`Int 0]))
+     && Result.is_error (Config.of_json (`Assoc ["failure_detail",`String "verbose"]))
+     && Result.is_error (Config.of_json (`Assoc ["search_url",`String "http://api.parallel.ai"])));
   check "explicit lower limits preserved" (match Config.of_json (`Assoc ["max_input_bytes",`Int 240000;
     "max_history_bytes",`Int 2000000;"max_tool_rounds",`Int 8]) with
     | Ok c->c.max_input_bytes=240000 && c.max_history_bytes=2000000 && c.max_tool_rounds=8 | _->false);
@@ -87,5 +94,8 @@ let () =
       (not(Hashtbl.mem engine.name_refresh "room"));
     let outgoing=Option.get(Store.next_outgoing store ~now:(Unix.gettimeofday ())) in
     check "deadline diagnostic remains deliverable" (outgoing.state="pending" && Retrieval.contains outgoing.body "request_deadline_exceeded");
-    check "user sees correlatable job ID" (Retrieval.contains outgoing.body "job_id");
+    check "the room sees a short reason with a job number for log lookup, not raw JSON"
+      (Retrieval.contains outgoing.body (Printf.sprintf "작업 %Ld" job.id) && not(Retrieval.contains outgoing.body "{"));
+    check "the full JSON diagnostic remains available as an option"
+      (Retrieval.contains (Engine.failure_text job (Llm.Network (Net.Http_status 503))) "http_503");
     Lwt.return_unit))

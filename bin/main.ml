@@ -149,7 +149,7 @@ let () =
             let reference=Store.answer_reference store message anchor in
             Conversation.run ~job_id:None ~config ~store ~llm:(Llm.create config store) ~name_messages:Lwt.return
               ~request ~anchor ~reference ~history ~range
-              ~version:(Store.room_version store ~source ~room:message.room_id) >|= function
+              ~version:(Store.room_version store ~source ~room:message.room_id) () >|= function
             | Error error->die(Json_util.to_string(Llm.error_details error))
             | Ok result->print_endline(Json_util.to_string (`Assoc ["sent",`Bool false;
                 "job_id",`Int !job_id;"coverage",result.Conversation.coverage;
