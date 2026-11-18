@@ -4,7 +4,7 @@ Build asko from source on a Linux x86_64 PC and deploy to a rooted Android ARM64
 
 ## Prerequisites
 
-The phone needs Termux, root access (the Iris installer uses Magisk), KakaoTalk signed in to the bot account, and [Iris v0.33-gosuda.1](https://github.com/gosuda/Iris/releases/tag/v0.33-gosuda.1) (upstream Iris v0.33 with query tracing and a bounded log). Install Iris with the project script in [Connect Iris](#connect-iris) after deploying asko. The phone needs no OCaml compiler or Linux container. OpenRouter supplies chat and embeddings by default; Go chat and local Jina embeddings are optional.
+The phone needs Termux, root access (the Iris installer uses Magisk), KakaoTalk signed in to the bot account, and [Iris v0.34-gosuda.1](https://github.com/gosuda/Iris/releases/tag/v0.34-gosuda.1) (upstream Iris v0.34 with query tracing, a bounded log, and the KakaoTalk 26.10 reply fix). Install Iris with the project script in [Connect Iris](#connect-iris) after deploying asko. The phone needs no OCaml compiler or Linux container. OpenRouter supplies chat and embeddings by default; Go chat and local Jina embeddings are optional.
 
 In Termux, install and start SSH, and note the username from `whoami`:
 
@@ -133,7 +133,7 @@ For local commands, export the variables named by the profile in your shell. A n
 
 ## Connect Iris
 
-Install with `./scripts/deploy-iris-phone.sh asko-phone`. It downloads [Iris v0.33-gosuda.1](https://github.com/gosuda/Iris/releases/tag/v0.33-gosuda.1), the gosuda build of [upstream Iris v0.33](https://github.com/dolidolih/Iris/releases/tag/v0.33) with `/query` tracing and a bounded daemon log, and checks its pinned SHA256. The [upstream installation instructions](https://github.com/dolidolih/Iris#시작하기) describe the `app_process` entry point.
+Install with `./scripts/deploy-iris-phone.sh asko-phone`. It downloads [Iris v0.34-gosuda.1](https://github.com/gosuda/Iris/releases/tag/v0.34-gosuda.1), the gosuda build of [upstream Iris v0.34](https://github.com/dolidolih/Iris/releases/tag/v0.34) with `/query` tracing, a bounded daemon log, and the KakaoTalk 26.10 reply fix, and checks its pinned SHA256. The [upstream installation instructions](https://github.com/dolidolih/Iris#시작하기) describe the `app_process` entry point.
 
 When the APK or launcher differs from the installed one, the installer copies the current APK, launcher and `config.json` to `/data/local/tmp/asko-iris/releases/before-<time>`, stops the running Iris and starts the new build. If the new Iris does not stay up, the previous build is restored automatically. The three newest backups are kept. Running the same build again only makes sure Iris and its firewall rules are up. To return to the previous build manually, run on the phone:
 

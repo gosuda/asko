@@ -5,7 +5,7 @@ umask 077
 unset LD_PRELOAD LD_LIBRARY_PATH
 asko_stage=/data/data/com.termux/files/home/asko/iris-install
 asko_iris=/data/local/tmp/asko-iris
-asko_sha=16bfed70f55d06b1553e2de9b923bf8515fdb26b5675fba5f315e66631a3f80f
+asko_sha=d331357be22dc710b566af0102bc7d5ac065a96c6ab48047ab118fa7757671fe
 test "$(id -u)" = 0
 asko_running_pid() {
     asko_pid=$(cat "$asko_iris/iris.pid" 2>/dev/null || :)
