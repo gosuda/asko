@@ -74,14 +74,18 @@ let valid_vector expected vector =
 
 let expected_dimensions = Provider.embedding_dimensions
 
-let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages =
+(* closed_only skips the newest chunk, which still grows with each message. The
+   background indexer uses it so that only finished chunks are embedded ahead of time. *)
+let index ?(progress=(fun _ _->())) ?(closed_only=false) ~config ~store ~llm ~range ~version messages =
   Telemetry.result ~error:Llm.error_name ~fields:["message_count",`Int(List.length messages)] "embedding_index" (fun ()->
   let messages=List.filter (in_range range) messages in
   let originals=Hashtbl.create (List.length messages) in
   List.iter(fun (m:message)->Hashtbl.replace originals m.seq m) messages;
   let snapshot chunk=List.map (fun (m:message)->m.seq) chunk.members |> List.sort_uniq Int64.compare
     |> List.filter_map (Hashtbl.find_opt originals) in
-  let values=Telemetry.sync "chunk_build" (fun ()->Array.of_list(chunks messages)) in
+  let values=Telemetry.sync "chunk_build" (fun ()->
+    let built=chunks messages in
+    Array.of_list(if closed_only then take (max 0 (List.length built-1)) built else built)) in
   let vectors=Telemetry.sync "vector_cache_load" (fun ()->Array.map (fun chunk->
     match Store.get_embedding store ~source:range.source ~room:range.room_id ~key:(cache_key chunk)
       ~model:(Provider.embedding_cache_model config) ~content:chunk.content with
@@ -92,30 +96,34 @@ let index ?(progress=(fun _ _->())) ~config ~store ~llm ~range ~version messages
   Telemetry.emit "embedding_cache" ["total_chunks",`Int total;"cache_hits",`Int(total-List.length missing);
     "cache_misses",`Int(List.length missing);"model",`String config.Config.embedding_model];
   progress (total-List.length missing) total;
-  let rec fill pending = match pending with
-    | []->Lwt.return(Ok(values,vectors))
-    | _->
-        let batch=take (Provider.embedding_batch_size config) pending in
-        let rest=List.filter (fun i->not(List.mem i batch)) pending in
-        Llm.embed llm (List.map(fun i->values.(i).content) batch) >>= function
-        | Error error->Lwt.return(Error error)
-        | Ok embedded when List.length embedded<>List.length batch ||
-            not(List.for_all (valid_vector (expected_dimensions config)) embedded)->
-            Lwt.return(Error(Llm.Bad_response {stage="retrieval";reason="invalid document embedding count or dimensions"}))
-        | Ok embedded->
-            (try
-              Telemetry.sync ~fields:["batch_size",`Int(List.length batch)] "vector_cache_write" (fun ()->List.iter2(fun i vector->
-                let chunk=values.(i) in
-                Store.put_embedding ~snapshot:(snapshot chunk) store ~source:range.source ~room:range.room_id
-                  ~key:(cache_key chunk) ~model:(Provider.embedding_cache_model config) ~content:chunk.content
-                  ~at:(Unix.gettimeofday ()) ~version vector;
-                vectors.(i)<-Some vector) batch embedded);
-              progress (total-List.length rest) total;
-              Lwt.pause () >>= fun ()->fill rest
-             with Store.Stale_snapshot->Lwt.return(Error Llm.Source_changed)) in
-  fill missing)
+  let size=Provider.embedding_batch_size config in
+  let rec split pending = if pending=[] then [] else
+    take size pending :: split (List.filteri (fun i _->i>=size) pending) in
+  let failed=ref None and completed=ref(total-List.length missing) in
+  let fail error=if !failed=None then failed:=Some error in
+  let pool=Lwt_pool.create (Provider.embedding_concurrency config) (fun ()->Lwt.return_unit) in
+  (* Completed batches are committed as they arrive; after a failure no new batch starts. *)
+  Lwt_list.iter_p (fun batch->Lwt_pool.use pool (fun ()->
+    if !failed<>None then Lwt.return_unit else
+    Llm.embed llm (List.map(fun i->values.(i).content) batch) >|= function
+    | Error error->fail error
+    | Ok embedded when List.length embedded<>List.length batch ||
+        not(List.for_all (valid_vector (expected_dimensions config)) embedded)->
+        fail (Llm.Bad_response {stage="retrieval";reason="invalid document embedding count or dimensions"})
+    | Ok embedded->
+        (try
+          Telemetry.sync ~fields:["batch_size",`Int(List.length batch)] "vector_cache_write" (fun ()->List.iter2(fun i vector->
+            let chunk=values.(i) in
+            Store.put_embedding ~snapshot:(snapshot chunk) store ~source:range.source ~room:range.room_id
+              ~key:(cache_key chunk) ~model:(Provider.embedding_cache_model config) ~content:chunk.content
+              ~at:(Unix.gettimeofday ()) ~version vector;
+            vectors.(i)<-Some vector) batch embedded);
+          completed:= !completed+List.length batch;
+          progress !completed total
+         with Store.Stale_snapshot->fail Llm.Source_changed))) (split missing)
+  >|= fun ()->match !failed with Some error->Error error | None->Ok(values,vectors))
 
-let select ?corpus ~config ~store ~llm ~range ~version ~topic ~focus messages =
+let select ?corpus ?(limit=12) ~config ~store ~llm ~range ~version ~topic ~focus messages =
   Telemetry.result ~error:Llm.error_name ~fields:["candidate_messages",`Int(List.length messages);
     "query_bytes",`Int(String.length topic)] "retrieval" (fun ()->
   let messages=List.filter (in_range range) messages in
@@ -132,15 +140,17 @@ let select ?corpus ~config ~store ~llm ~range ~version ~topic ~focus messages =
   let lexical_fallback error =
     Telemetry.emit "retrieval_fallback" ["reason",`String(Llm.error_name error);"method",`String "keyword"];
     let hits=candidates |> List.map(fun c->lexical topic (chunk_content(selected_members c)),c)
-      |> List.filter(fun (s,_)->s>0.) |> List.sort(fun (a,_) (b,_)->Float.compare b a) |> take 12 in
+      |> List.filter(fun (s,_)->s>0.) |> List.sort(fun (a,_) (b,_)->Float.compare b a) |> take limit in
     if hits=[] then Error error else Ok {messages=expand messages (List.concat_map(fun (_,c)->selected_members c) hits);
       note=Some "의미 검색을 사용할 수 없어 키워드가 일치한 발췌만 확인했습니다. 전체 조사 결과가 아닙니다."} in
   if messages=[] then Lwt.return(Ok {messages=[];note=None}) else
   let query=topic ^ (if focus=Conclusions then " 최종 결론 합의 정정" else "") in
-  Llm.embed llm ~query:true [query] >>= function
-  | Error error->Lwt.return(lexical_fallback error)
-  | Ok [query_vector] when valid_vector (expected_dimensions config) query_vector->
-      index ~config ~store ~llm ~range:corpus_range ~version corpus >|= (function
+  (* The query vector and any chunks still missing from the index are requested together. *)
+  Lwt.both (Llm.embed llm ~query:true [query])
+    (index ~config ~store ~llm ~range:corpus_range ~version corpus) >|= function
+  | Error error,_->lexical_fallback error
+  | Ok [query_vector],indexed when valid_vector (expected_dimensions config) query_vector->
+      (match indexed with
       | Error error->lexical_fallback error
       | Ok(values,vectors)->
           Telemetry.sync ~fields:["chunks",`Int(Array.length values)] "vector_rank" (fun ()->
@@ -150,6 +160,6 @@ let select ?corpus ~config ~store ~llm ~range ~version ~topic ~focus messages =
             let exact=lexical topic (chunk_content eligible) in
             eligible,semantic,exact,0.8*.semantic+.0.2*.exact) values) in
           let hits=scored |> List.filter(fun (members,semantic,exact,_)->members<>[] && (semantic>=0.25 || exact>0.))
-            |> List.sort(fun (_,_,_,a) (_,_,_,b)->Float.compare b a) |> take 12 in
+            |> List.sort(fun (_,_,_,a) (_,_,_,b)->Float.compare b a) |> take limit in
           Ok {messages=expand messages (List.concat_map(fun (members,_,_,_)->members) hits);note=None}))
-  | Ok _->Lwt.return(Error(Llm.Bad_response {stage="retrieval";reason="invalid query embedding"})))
+  | Ok _,_->Error(Llm.Bad_response {stage="retrieval";reason="invalid query embedding"}))

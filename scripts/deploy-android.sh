@@ -70,6 +70,10 @@ chmod 700 "releases/$asko_pending/asko"
         ASKO_EMBEDDING_API_KEY=$(cat secrets/embedding.key)
         export ASKO_EMBEDDING_API_KEY
     fi
+    if [ "${PARALLEL_API_KEY+x}" != x ] && [ -s secrets/parallel.key ]; then
+        PARALLEL_API_KEY=$(cat secrets/parallel.key)
+        export PARALLEL_API_KEY
+    fi
     if [ -z "${ASKO_INGEST_TOKEN:-}" ] && [ -s secrets/ingest.token ]; then
         ASKO_INGEST_TOKEN=$(cat secrets/ingest.token)
         export ASKO_INGEST_TOKEN

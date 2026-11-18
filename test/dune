@@ -72,5 +72,5 @@
 (rule
  (alias runtest)
  (deps test_boot_scripts.py ../scripts/install-boot-service.sh ../scripts/deploy-iris-phone.sh
-   ../tools/magisk-asko.sh.in ../tools/magisk-iris.sh.in)
+   ../tools/magisk-asko.sh.in ../tools/magisk-iris.sh.in ../tools/iris-install-root.sh)
  (action (run python3 -B %{dep:test_boot_scripts.py})))

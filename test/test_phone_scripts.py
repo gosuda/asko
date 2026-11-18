@@ -91,7 +91,7 @@ asko_test_nohup() {
             "          'ca': pathlib.Path(os.environ['SSL_CERT_FILE']).read_text(),\n"
             "          'keys': {key: os.environ.get(key) for key in\n"
             "          ['OPENROUTER_API_KEY', 'OPENCODE_GO_API_KEY',\n"
-            "           'ASKO_EMBEDDING_API_KEY', 'ASKO_INGEST_TOKEN']}}\n"
+            "           'ASKO_EMBEDDING_API_KEY', 'PARALLEL_API_KEY', 'ASKO_INGEST_TOKEN']}}\n"
             "print(json.dumps(record))\n"
             "if sys.argv[1] == 'check-config' and not value.get('valid'):\n"
             "    sys.exit(41)\n"
@@ -175,6 +175,7 @@ asko_test_nohup() {
             self.assertEqual(record["keys"]["OPENCODE_GO_API_KEY"], "test-go")
             self.assertEqual(record["keys"]["ASKO_EMBEDDING_API_KEY"], "test-embedding")
             self.assertEqual(record["keys"]["OPENROUTER_API_KEY"], "test-openrouter")
+            self.assertEqual(record["keys"]["PARALLEL_API_KEY"], "test-parallel")
 
     def test_valid_first_install_copies_only_validated_example(self):
         release, pending = self.stage()
@@ -208,7 +209,8 @@ asko_test_nohup() {
     def write_secrets(self):
         for name, value in (("openrouter.key", "test-openrouter"),
                             ("opencode-go.key", "test-go"),
-                            ("embedding.key", "test-embedding")):
+                            ("embedding.key", "test-embedding"),
+                            ("parallel.key", "test-parallel")):
             (self.phone / "secrets" / name).write_text(value + "\n")
 
     def test_launcher_loads_optional_secret_files_and_preserves_legacy_key(self):
@@ -221,6 +223,7 @@ asko_test_nohup() {
         self.assertEqual(record["keys"]["OPENROUTER_API_KEY"], "test-openrouter")
         self.assertEqual(record["keys"]["OPENCODE_GO_API_KEY"], "test-go")
         self.assertEqual(record["keys"]["ASKO_EMBEDDING_API_KEY"], "test-embedding")
+        self.assertEqual(record["keys"]["PARALLEL_API_KEY"], "test-parallel")
 
     def test_launcher_respects_explicit_environment_even_empty_new_keys(self):
         self.install_old()

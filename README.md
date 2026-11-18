@@ -2,7 +2,7 @@
 
 An experimental AI assistant for KakaoTalk OpenChat, written in OCaml, with a focus on conversation summaries.
 
-Mention the bot to catch up on a conversation, ask a question, or get help with a task. Reply to a message and mention the bot to give it context. You can follow up on its answers the same way.
+Mention the bot to catch up on a conversation, ask a question, look something up on the web, or get help with a task. Reply to a message and mention the bot to give it context. You can follow up on its answers the same way.
 
 ## Use
 
@@ -13,10 +13,12 @@ Select the bot account in KakaoTalk's mention picker. The name below is an examp
 @요약봇 오늘 중요한거
 @요약봇 아까 postgres 얘기 결론 뭐임
 [메시지에 답장하면서] @요약봇 이 얘기 결론 어떻게 됐어?
+[봇의 답에 답장하면서] 두 번째 항목만 더 자세히
 @요약봇 최근 2시간 대화 정리해줘
+@요약봇 OCaml 최신 버전 뭐야? 릴리스 노트도 찾아줘
 ```
 
-The bot can look up earlier messages when it needs more context. Each room's history stays separate.
+The bot decides what each request needs. It can read and search earlier messages, search the web, and open links. Each room's history stays separate unless `cross_room_read` is enabled. A KakaoTalk reply to one of the bot's own messages reaches the bot without a mention.
 
 ## Setup
 
@@ -78,5 +80,21 @@ Generate a separate configuration with `./scripts/dev dune exec asko -- init --c
 For Gemini BYOK, register your Google key in [OpenRouter BYOK settings](https://openrouter.ai/settings/integrations) and keep an OpenRouter key in `api_key` or `OPENROUTER_API_KEY`. Set `chat_provider_only` to `["google-ai-studio"]` for AI Studio or `["google-vertex"]` for Vertex. This restricts both tool and structured chat requests; embeddings keep their own key and routing. Omit the list or use `[]` for automatic provider selection.
 
 Provider selection alone does not guarantee BYOK-only billing. Disable shared-capacity fallback on the registered BYOK key if required. Data-collection restrictions remain enabled, and OpenRouter key limits must still permit the request. See [OpenRouter's BYOK documentation](https://openrouter.ai/docs/guides/overview/auth/byok).
+
+### Web search
+
+Web search uses [Parallel](https://parallel.ai). Put the key in `PARALLEL_API_KEY`, or in `secrets/parallel.key` on the phone (loaded when the variable is unset); `search_api_key_env` names a different variable and `search_api_key` holds an inline key. Without a key the bot still opens links with its local fetcher but has no search tool. With a key it also falls back to Parallel Extract for pages the local fetcher cannot read. Search and Extract are billed per request by Parallel, and asko applies no separate web call limit.
+
+### Agent settings
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `max_tool_rounds` | `96` | Model calls per request, 1 to 128 |
+| `job_workers` | `3` | Requests processed at the same time, 1 to 8 |
+| `answer_audit` | `room_claims` | Grounding check for answers about the room; `always` or `off` |
+| `failure_detail` | `brief` | Failure message sent to the room; `json` sends the full diagnostic |
+| `cross_room_read` | `false` | Let the bot read other rooms in `rooms` when asked |
+| `reply_trigger` | `true` | Treat a reply to a bot message as a request, without a mention |
+| `search_url` | `https://api.parallel.ai` | Parallel API base URL |
 
 See [implementation notes](docs/implementation.md) for conversation handling, recovery, and validation limits. Clean-machine installation and phone reboot behavior remain unverified.

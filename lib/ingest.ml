@@ -1,6 +1,10 @@
 open Types
 type outcome = Ignored of string | Stored of { inserted : bool; job : Store.enqueue_result option }
 
+let invocation ~(config : Config.t) ~store (message : message) =
+  Trigger.detect ~bot_id:config.bot_id message
+    ~reply_to_bot:(config.reply_trigger && Store.replies_to_bot store message)
+
 let apply ~config ~store ~now ~live (message : message) =
   if not (Config.allowed config message.room_id) then Ignored "room_not_allowed"
   else if message.created_at > now +. 60. then Ignored "future_timestamp"
@@ -12,7 +16,7 @@ let apply ~config ~store ~now ~live (message : message) =
       match Store.get_message store ~source:message.source ~seq:message.seq with
       | Some prior when message.sender_name=message.sender_id -> {message with sender_name=prior.sender_name}
       | _ -> message in
-    let invocation = Trigger.detect ~bot_id:config.bot_id message in
+    let invocation = invocation ~config ~store message in
     Store.transaction store (fun () ->
       if not message.is_bot then Store.observe_name store ~source:message.source ~room:message.room_id ~user_id:message.sender_id
         ~name:message.sender_name ~at:(if live then now else message.created_at) ~current:live;

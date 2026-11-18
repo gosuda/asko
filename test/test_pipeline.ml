@@ -133,6 +133,9 @@ let () =
             let last=List.hd(List.rev turns) in
             let name,args=if field "role" last=`String "tool" then
               let result=field "content" last |> Json_util.string |> Yojson.Safe.from_string in
+              if Json_util.field "sent" result<>None then
+                "search_messages",`Assoc ["query",`String "postgres";"start",`Null;"end",`Null]
+              else
               let messages=field "messages" result |> Json_util.list Fun.id in
               let ids=List.map (fun m->field "id" m |> Json_util.string) messages in
               contexts:=ids::!contexts;
@@ -144,7 +147,9 @@ let () =
                   (field "reply" initial |> field "is_bot" = `Bool true);
                 check "earlier response remains contextual input" (field "previous_answer" initial<>`Null)
               end;
-              "search_messages",`Assoc ["query",`String "postgres";"start",`Null;"end",`Null]
+              if Retrieval.contains (field "request" initial |> Json_util.string) "진행" then
+                "send_progress",`Assoc ["text",`String "찾아보는 중이에요"]
+              else "search_messages",`Assoc ["query",`String "postgres";"start",`Null;"end",`Null]
             end in
             response (`Assoc ["choices",`List [`Assoc ["finish_reason",`String "tool_calls";
               "message",`Assoc ["role",`String "assistant";"content",`Null;
@@ -161,18 +166,12 @@ let () =
                 let system=field "messages" json |> Json_util.list Fun.id |> List.hd |> field "content" |> Json_util.string in
                 check "JSON mode includes the output contract in system instructions"
                   (Retrieval.contains system "\"additionalProperties\":false" && Retrieval.contains system "\"required\"");
-                if Retrieval.contains system "(asko_context_plan)" then "asko_context_plan"
-                else if Retrieval.contains system "(asko_answer_audit)" then "asko_answer_audit"
+                if Retrieval.contains system "(asko_answer_audit)" then "asko_answer_audit"
                 else if Json_util.field "request" payload<>None then "asko_intent" else "asko_summary"
             | `String "json_schema" -> field "json_schema" format |> field "name" |> Json_util.string
             | _ -> failwith "unsupported response format" in
           check "other-room contents never reach model" (not (Retrieval.contains (Json_util.to_string payload) "PRIVATE_ROOM_SHOULD_NEVER_LEAK"));
-          let answer=if name="asko_context_plan" then
-              let request=field "request" payload |> Json_util.string in
-              `Assoc ["mode",`String(if Retrieval.contains request "2시간" then "read_all" else "search");
-                "start",`Null;"end",`Null;"speaker_id",`Null;"query",`String "postgres";
-                "followup",`Bool(field "previous_exchange" payload<>`Null && Retrieval.contains request "이 얘기")]
-            else if name="asko_answer_audit" then `Assoc ["supported",`Bool true;"issues",`String ""]
+          let answer=if name="asko_answer_audit" then `Assoc ["supported",`Bool true;"issues",`String ""]
             else if name="asko_intent" then
               if field "has_reply_anchor" payload=`Bool true then begin
                 check "reply text reaches the classifier" (field "reply_context" payload<>`Null);
@@ -281,17 +280,25 @@ let () =
       Retrieval.index ~config ~store ~llm ~range ~version history >>= fun indexed ->
       check "backfill resumes without rebilling completed chunks"
         (Result.is_ok indexed && !embeddings=before_backfill);
+      Retrieval.index ~closed_only:true ~config ~store ~llm ~range ~version history >>= fun closed ->
+      check "background indexing leaves the still-growing newest chunk alone"
+        (match indexed,closed with Ok(all,_),Ok(finished,_)->Array.length finished=Array.length all-1 | _->false);
+      let indexer=Engine.create config store in
+      Engine.preindex indexer "1001" >>= fun () ->
+      let after_first_pass= !embeddings in
+      Engine.preindex indexer "1001" >>= fun () ->
+      check "background indexing skips a room without new messages" (!embeddings=after_first_pass);
       let request={Types.message={m with seq=209L;created_at=now};trigger=Types.Mention;prompt="postgres"} in
       let capped={config with max_tool_rounds=1} in
       let calls_before= !chats in
       Conversation.run ~job_id:None ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
-        ~request ~anchor:None ~reference:None ~history ~range ~version >>= fun capped_result ->
+        ~request ~anchor:None ~reference:None ~history ~range ~version () >>= fun capped_result ->
       check "tool round limit stops at configured call count" (!chats=calls_before+1 &&
         capped_result=Error (Llm.Limit_exceeded {resource="max_tool_rounds";actual=Some 1;limit=1}));
       let capped={config with max_tool_rounds=4} in
       Conversation.run ~job_id:None ~config:capped ~store ~llm:(Llm.create capped store) ~name_messages:Lwt.return
-        ~request ~anchor:None ~reference:None ~history ~range ~version >>= fun completed ->
-      check "final permitted round can answer" (Result.is_ok completed && !chats=calls_before+5);
+        ~request ~anchor:None ~reference:None ~history ~range ~version () >>= fun completed ->
+      check "search, answer and grounding check fit in the permitted rounds" (Result.is_ok completed && !chats=calls_before+4);
       let dry_store=Store.open_ ":memory:" in
       let dry_message={m with Types.seq=209L;native_id=Some(native_id 209);text="/요약 도움말";created_at=now} in
       ignore(Store.put_message dry_store ~is_command:true dry_message);
@@ -329,6 +336,12 @@ let () =
       post 230 >>= fun _ -> wait_sent 3 200 >>= fun () ->
       check "natural duration request shares the same pipeline" (List.length !deliveries=3);
       check "all results observed, never blindly resent" (List.for_all (fun (o:Store.outgoing)->o.state="sent") (Store.recent_outbox store));
+      insert fixture ~seq:240 ~room:"1001" ~sender:"2001" ~at:now ~text:"진행 상황 알려주면서 postgres 찾아줘" ~mentions:["9999"] ();
+      post 240 >>= fun _ -> wait_sent 4 200 >>= fun () ->
+      check "an interim line the agent chose reaches the room before the answer, outside the outbox"
+        (List.length !deliveries=5 && List.nth !deliveries 1="찾아보는 중이에요"
+         && List.length (Store.recent_outbox store)=4
+         && List.for_all (fun (o:Store.outgoing)->o.state="sent") (Store.recent_outbox store));
       ignore(Sqlite3.exec fixture "DELETE FROM chat_logs WHERE _id=201");
       fail_second_page:=true;
       Recovery.reconcile ~config ~store ~iris "1001" >>= fun incomplete ->

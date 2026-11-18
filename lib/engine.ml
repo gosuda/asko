@@ -5,10 +5,13 @@ type t = {
   recovery_lock : Lwt_mutex.t; mutable next_send_at : float;
   name_refresh : (string,float) Hashtbl.t;
   sync_failures : (string,Yojson.Safe.t) Hashtbl.t;
+  mutable room_labels : (string * string option) list option;
+  indexed : (string,int64) Hashtbl.t;
 }
 let create config store = {
   config; store; iris=Iris.create config; llm=Llm.create config store;
   recovery_lock=Lwt_mutex.create (); name_refresh=Hashtbl.create 8;sync_failures=Hashtbl.create 8; next_send_at=Store.last_send_at store +. config.Config.send_interval;
+  room_labels=None; indexed=Hashtbl.create 8;
 }
 let log event code =
   prerr_endline (Json_util.to_string (`Assoc ["event",`String event;"code",`String code]))
@@ -98,6 +101,21 @@ let diagnostic t (job:Store.job) error =
     "deadline_at",`String(Context_plan.timestamp job.expires_at);
     "request_ttl_seconds",`Float t.config.request_ttl])
 
+(* What the room sees. The full diagnostic stays in service.log under the same job ID. *)
+let failure_text (job:Store.job) error =
+  let reason=match error with
+    | Llm.Request_timeout -> "시간 안에 끝내지 못했어요. 범위를 좁혀서 다시 물어봐 주세요."
+    | Llm.Limit_exceeded {resource="daily_budget_tokens";_} -> "오늘 쓸 수 있는 모델 사용량을 다 써서 답하지 못했어요."
+    | Llm.Limit_exceeded {resource="max_tool_rounds";_} -> "작업이 너무 길어져서 끝내지 못했어요. 범위를 좁혀서 다시 물어봐 주세요."
+    | Llm.Limit_exceeded _ -> "읽어야 할 내용이 너무 많아서 처리하지 못했어요. 기간이나 범위를 좁혀 주세요."
+    | Llm.Network _ -> "모델 서버가 응답하지 않아서 답하지 못했어요. 잠시 뒤에 다시 물어봐 주세요."
+    | Llm.Not_configured -> "모델 설정이 빠져 있어서 답하지 못했어요."
+    | Llm.Bad_response {stage="answer_grounding";_} -> "대화 기록으로 확인되는 답을 만들지 못했어요. 질문을 조금 더 구체적으로 해 주세요."
+    | Llm.Bad_response _ -> "모델이 올바른 답을 내지 못했어요. 다시 물어봐 주세요."
+    | Llm.Source_changed -> "답을 만드는 동안 대화가 계속 바뀌어서 끝내지 못했어요. 다시 물어봐 주세요."
+    | Llm.Internal_error _ -> "내부 오류로 답하지 못했어요." in
+  Printf.sprintf "%s\n(오류 %s, 작업 %Ld)" reason (Llm.error_name error) job.id
+
 let failed t ?(sync_errors=[]) (job:Store.job) error =
   let details=diagnostic t job error in
   let now=Unix.gettimeofday () in
@@ -110,7 +128,9 @@ let failed t ?(sync_errors=[]) (job:Store.job) error =
     (* A deadline failure still needs a deliverable diagnostic. *)
     Store.run t.store "UPDATE jobs SET expires_at=MAX(expires_at,?) WHERE id=?"
       [Store.real(now+.60.);Store.integer job.id];
-    finish t job ~sync_errors ~refresh:false ("asko 요청 실패\n" ^ Json_util.to_string details)
+    finish t job ~sync_errors ~refresh:false
+      (if t.config.failure_detail="json" then "asko 요청 실패\n" ^ Json_util.to_string details
+       else failure_text job error)
   end
 
 let source_changed_notice t job = failed t job Llm.Source_changed
@@ -148,11 +168,72 @@ let speaker_names t messages =
   | (m:message)::_ -> refresh_names t m.room_id >|= fun () ->
       Store.with_speaker_names t.store ~source:m.source ~room:m.room_id messages
 
+(* An interim line the agent chose to post. It skips the outbox: nothing depends on
+   its delivery, and a lost line must never delay or duplicate the answer. *)
+let progress t (job:Store.job) text =
+  let room=job.invocation.message.room_id in
+  let text=if String.is_valid_utf_8 text then Utf8.take 300 (String.trim text) else "" in
+  if text="" || not(Config.allowed t.config room)
+     || not(Store.reserve_progress t.store ~job_id:job.id ~limit:2) then Lwt.return false
+  else begin
+    Telemetry.emit "progress_line" ["job_id",`String(Int64.to_string job.id);
+      "bytes",`Int(String.length text);"dry_run",`Bool t.config.dry_run];
+    if t.config.dry_run then Lwt.return true else
+    let wait=t.next_send_at-.Unix.gettimeofday () in
+    (if wait>0. then Lwt_unix.sleep (min wait 5.) else Lwt.return_unit) >>= fun () ->
+    t.next_send_at <- Unix.gettimeofday () +. t.config.send_interval;
+    Iris.configuration t.iris >>= function
+    | Error _ -> Lwt.return false
+    | Ok settings ->
+        if Json_util.protect (fun () -> Json_util.required "bot_id" settings |> Json_util.id)<>Ok t.config.bot_id
+        then Lwt.return false
+        else Iris.reply t.iris ~room ~body:text >|= Result.is_ok
+  end
+
+(* Other enabled rooms the agent may read, with names when Iris knows them. *)
+let other_rooms t room =
+  if not t.config.cross_room_read then Lwt.return [] else
+  (match t.room_labels with
+   | Some labels -> Lwt.return labels
+   | None -> Iris.rooms t.iris >|= fun listed ->
+       let names=match listed with Ok rooms->rooms | Error _->[] in
+       let labels=List.map (fun id->id,Option.join(List.assoc_opt id names)) t.config.rooms in
+       if Result.is_ok listed then t.room_labels <- Some labels;
+       labels)
+  >|= List.filter (fun (id,_)->id<>room)
+
+(* Embed finished chunks ahead of the first search. Only rooms with new
+   messages since the last pass are loaded. *)
+let preindex t room =
+  if Config.api_key_embed t.config=None && not(Config.local_embeddings t.config) then Lwt.return_unit else
+  let source=t.config.source_id in
+  let latest=Store.one t.store {|SELECT MAX(seq) FROM messages WHERE source=? AND room_id=?
+    AND is_bot=0 AND deleted=0 AND is_command=0|} [Store.text source;Store.text room]
+    (fun s->Store.optional_int64 s 0) |> Option.join in
+  match latest with
+  | None -> Lwt.return_unit
+  | Some seq when Hashtbl.find_opt t.indexed room=Some seq -> Lwt.return_unit
+  | Some seq ->
+      let now=Unix.gettimeofday () in
+      let since=now -. float_of_int (t.config.retention_days*86400) in
+      let range={source;room_id=room;lower=At_time since;before_seq=Int64.max_int;
+        through_time=now+.60.;retention_start=since;note=None} in
+      (match Store.messages ~max_bytes:t.config.max_history_bytes t.store range with
+       | exception Store.History_too_large -> Lwt.return_unit
+       | messages ->
+           let messages=Store.with_speaker_names t.store ~source ~room messages in
+           let version=Store.room_version t.store ~source ~room in
+           Telemetry.with_trace ~kind:"index" ~fields:["room_id",`String room] (fun ()->
+             Retrieval.index ~closed_only:true ~config:t.config ~store:t.store ~llm:t.llm ~range ~version messages)
+           >|= function
+           | Ok _ -> Hashtbl.replace t.indexed room seq
+           | Error error -> log "preindex_failed" (Llm.error_name error))
+
 let process_job_body t (job:Store.job) =
   let active_sync=ref None and request_sync_errors=ref [] in
   let request=job.invocation.message in
   if request.source<>t.config.source_id || not (Config.allowed t.config request.room_id) || request.deleted || request.is_bot
-     || job.invocation.trigger<>Mention || Trigger.detect ~bot_id:t.config.bot_id request=None then
+     || job.invocation.trigger=Slash || Ingest.invocation ~config:t.config ~store:t.store request=None then
     (Store.fail_job t.store job ~now:(Unix.gettimeofday ()) ~retry:false ~reason:"scope_changed"; Lwt.return_unit)
   else if job.attempts>3 then
     source_changed_notice t job
@@ -174,10 +255,12 @@ let process_job_body t (job:Store.job) =
         |> Store.with_speaker_names t.store ~source:request.source ~room:request.room_id) in
       Telemetry.emit "history_loaded" ["message_count",`Int(List.length history)];
       let version=Store.room_version t.store ~source:request.source ~room:request.room_id in
-      Conversation.run ~job_id:(Some job.id) ~config:t.config ~store:t.store ~llm:(Llm.for_conversation t.llm request.room_id) ~name_messages:(speaker_names t)
-        ~request:job.invocation ~anchor ~reference ~history ~range ~version >>= function
+      other_rooms t request.room_id >>= fun rooms ->
+      Conversation.run ~deadline:job.expires_at ~notify:(progress t job) ~rooms
+        ~job_id:(Some job.id) ~config:t.config ~store:t.store ~llm:(Llm.for_conversation t.llm request.room_id) ~name_messages:(speaker_names t)
+        ~request:job.invocation ~anchor ~reference ~history ~range ~version () >>= function
       | Error error -> failed t ~sync_errors:!request_sync_errors job error
-      | Ok {Conversation.answer;evidence_messages;input_messages;coverage} ->
+      | Ok {Conversation.answer;evidence_messages;input_messages;coverage;web_sources} ->
           let body=Summary.render_answer ~max_bytes:t.config.max_response_bytes ~messages:evidence_messages answer in
           let anchor_snapshot=match anchor with
             | Some m when m.is_bot -> [{m with text=""}]
@@ -186,7 +269,8 @@ let process_job_body t (job:Store.job) =
               (request :: anchor_snapshot @ input_messages @ evidence_messages) in
           let evidence=`Assoc ["selected_ids",`List (List.map (fun (m:message)->`String(Int64.to_string m.seq)) evidence_messages);
             "input_ids",`List(List.map (fun (m:message)->`String(Int64.to_string m.seq)) snapshot);
-            "coverage",coverage] in
+            "coverage",coverage;
+            "web",`List(List.map (fun (url,title)->`Assoc ["url",`String url;"title",`String title]) web_sources)] in
           finish t job ~sync_errors:!request_sync_errors ~snapshot ~snapshot_version:version ~evidence body))
     (function
       | Lwt.Canceled -> Lwt.fail Lwt.Canceled
@@ -287,7 +371,10 @@ let run ?on_ready ~stop t =
     ignore (Store.purge t.store ~before:(Unix.gettimeofday () -. float_of_int (t.config.retention_days*86400)));
     Lwt.return_unit in
   let reconciliation () = Lwt_list.iter_s (fun room -> reconcile t room >|= fun _->()) t.config.rooms in
-  let workers=[supervise "job_worker" jobs 0.2 (); supervise "sender" (fun ()->send_tick t) 0.5 ();
+  let indexing () = Lwt_list.iter_s (preindex t) t.config.rooms in
+  let workers=List.init t.config.job_workers (fun _->supervise "job_worker" jobs 0.2 ()) @
+              [supervise "sender" (fun ()->send_tick t) 0.5 ();
+               supervise "indexer" indexing 60. ();
                supervise "recovery" recovery t.config.recovery_interval (); supervise "retention" maintenance 60. ();
                (Lwt_unix.sleep t.config.reconcile_interval >>= supervise "reconcile" reconciliation t.config.reconcile_interval)] in
   Lwt.finalize

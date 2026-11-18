@@ -121,13 +121,26 @@ let html_text html =
   scan 0;
   clean (Buffer.contents title),clean (Buffer.contents body)
 
-let take_chars limit text =
+let char_offset limit text =
   let rec loop offset count =
     if offset>=String.length text || count=limit then offset else
     loop (offset + Uchar.utf_decode_length (String.get_utf_8_uchar text offset)) (count+1) in
-  let stop=loop 0 0 in String.sub text 0 stop,stop<String.length text
+  loop 0 0
+let take_chars limit text =
+  let stop=char_offset limit text in String.sub text 0 stop,stop<String.length text
 
-let document uri headers body =
+let page_chars=20000
+(* One page of readable text. next_offset continues a long document. *)
+let page ?(offset=0) ?via ~url ~title ~mime text =
+  let offset=max 0 offset in
+  let start=char_offset offset text in
+  let text,truncated=take_chars page_chars (String.sub text start (String.length text-start)) in
+  `Assoc (["url",`String url;"title",`String(fst(take_chars 300 title));
+    "content_type",`String mime;"text",`String text;"truncated",`Bool truncated]
+    @ (if truncated then ["next_offset",`Int(offset+page_chars)] else [])
+    @ (match via with None->[] | Some name->["via",`String name]))
+
+let document ?offset uri headers body =
   if not (String.is_valid_utf_8 body) then fail "unsupported_text_encoding";
   let encoding=Cohttp.Header.get headers "content-encoding" |> Option.value ~default:"identity" |> String.lowercase_ascii in
   if encoding<>"identity" then fail "unsupported_content_encoding";
@@ -137,11 +150,9 @@ let document uri headers body =
     | "text/html" | "application/xhtml+xml" -> html_text body
     | "text/plain" | "application/json" | "text/json" -> "",String.trim body
     | _ -> fail "unsupported_content_type" in
-  let text,truncated=take_chars 20000 text in
-  `Assoc ["url",`String(Uri.to_string uri);"title",`String(fst(take_chars 300 title));
-    "content_type",`String mime;"text",`String text;"truncated",`Bool truncated]
+  page ?offset ~url:(Uri.to_string uri) ~title ~mime text
 
-let fetch_with ~resolve ~request url =
+let fetch_with ?offset ~resolve ~request url =
   let rec follow left url =
     let uri,host,port=target url in
     resolve host port >>= fun addresses ->
@@ -154,7 +165,7 @@ let fetch_with ~resolve ~request url =
       let next=Uri.resolve "" uri (Uri.of_string location) |> Uri.to_string in
       follow (left-1) next
     end else if status<200 || status>=300 then fail ("http_" ^ string_of_int status)
-    else Lwt.return (document uri headers body) in
+    else Lwt.return (document ?offset uri headers body) in
   Lwt.catch
     (fun () -> Lwt_unix.with_timeout 10. (fun () -> follow 5 url))
     (fun error ->
@@ -164,4 +175,4 @@ let fetch_with ~resolve ~request url =
         | Net.Limit_exceeded -> "body_too_large" | _ -> "fetch_failed" in
       Lwt.return (`Assoc ["error",`String reason]))
 
-let fetch url = fetch_with ~resolve ~request url
+let fetch ?offset url = fetch_with ?offset ~resolve ~request url

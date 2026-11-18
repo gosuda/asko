@@ -3,7 +3,9 @@ open Types
 exception Error of string
 exception Stale_snapshot
 exception History_too_large
-type t = { db : Sqlite3.db }
+(* vectors keeps decoded embeddings in memory: parsing thousands of stored JSON
+   vectors for every search costs seconds on the phone. *)
+type t = { db : Sqlite3.db; vectors : (string, string * float array) Hashtbl.t }
 type job = { id : int64; invocation : invocation; attempts : int; expires_at : float }
 type enqueue_result = Queued of int64 | Duplicate | Stale | Rate_limited
 type outgoing = {
@@ -88,13 +90,13 @@ PRAGMA user_version=1;
 
 let open_ path =
   mkdir (Filename.dirname path);
-  let t = {db=Sqlite3.db_open path} in
+  let t = {db=Sqlite3.db_open path;vectors=Hashtbl.create 1024} in
   (try
      Sqlite3.busy_timeout t.db 1000;
      exec t "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL";
      (match count t "PRAGMA user_version" [] with
       | 0 -> transaction t (fun () -> exec t schema)
-      | 1 | 2 | 3 | 4 | 5 | 6 -> ()
+      | 1 | 2 | 3 | 4 | 5 | 6 | 7 -> ()
       | _ -> raise (Error "database schema is newer than this program"));
      if count t "PRAGMA user_version" [] = 1 then
        transaction t (fun () -> exec t "ALTER TABLE outbox ADD COLUMN snapshot_version INTEGER; PRAGMA user_version=2");
@@ -125,6 +127,9 @@ let open_ path =
            PRIMARY KEY(job_id,cache_key));
          PRAGMA user_version=6;
        |});
+     if count t "PRAGMA user_version" [] = 6 then
+       transaction t (fun () -> exec t
+         "ALTER TABLE jobs ADD COLUMN progress_sent INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=7");
      exec t "CREATE INDEX IF NOT EXISTS messages_retention ON messages(created_at)";
      t
    with exn -> ignore (Sqlite3.db_close t.db); raise exn)
@@ -139,6 +144,13 @@ let reserve_model_call t ~job_id ~limit =
   run t "UPDATE jobs SET model_calls=model_calls+1 WHERE id=? AND model_calls<?"
     [integer job_id;integer(Int64.of_int limit)];
   Sqlite3.changes t.db=1
+(* Progress lines are counted per job, across retries and restarts. *)
+let reserve_progress t ~job_id ~limit =
+  run t "UPDATE jobs SET progress_sent=progress_sent+1 WHERE id=? AND progress_sent<?"
+    [integer job_id;integer(Int64.of_int limit)];
+  Sqlite3.changes t.db=1
+
+let vector_key ~source ~room ~key ~model = String.concat "\000" [source;room;key;model]
 
 let context_notes t ~job_id ~key =
   one t "SELECT attempts,notes,last_error FROM context_notes WHERE job_id=? AND cache_key=?"
@@ -255,10 +267,15 @@ let invalidate_message t ~source ~room ~seq =
   List.iter (fun (key,model,dependencies) ->
     let affected=match dependencies with None->true | Some value ->
       match dependency_ids value with Ok ids->List.mem (Int64.to_string seq) ids | Error _->true in
-    if affected then run t "DELETE FROM embeddings WHERE source=? AND room_id=? AND cache_key=? AND model=?"
-      [text source;text room;text key;text model]) embeddings;
+    if affected then begin
+      Hashtbl.remove t.vectors (vector_key ~source ~room ~key ~model);
+      run t "DELETE FROM embeddings WHERE source=? AND room_id=? AND cache_key=? AND model=?"
+        [text source;text room;text key;text model]
+    end) embeddings;
+  (* An answer can cite another enabled room, so match evidence across the source. *)
   let outputs=rows t {|SELECT id,job_id,state,evidence FROM outbox
-    WHERE source=? AND room_id=? AND snapshot_version IS NOT NULL AND body<>''|}
+    WHERE source=? AND snapshot_version IS NOT NULL AND body<>''
+    AND (room_id=? OR evidence IS NOT NULL)|}
     [text source;text room] (fun s->Sqlite3.column_int64 s 0,Sqlite3.column_int64 s 1,
       Sqlite3.column_text s 2,optional_text s 3) in
   List.iter (fun (id,job,state,evidence) ->
@@ -309,6 +326,14 @@ let previous t (request : message) =
     ORDER BY seq DESC LIMIT 1|})
     [text request.source; text request.room_id; text request.sender_id; integer request.seq; real request.created_at]
     message_row
+
+(* Whether a message quotes one of the bot's own stored messages in the same room. *)
+let replies_to_bot t (message : message) = match message.reply_to with
+  | None -> false
+  | Some native_id ->
+      count t {|SELECT COUNT(*) FROM messages WHERE source=? AND room_id=? AND native_id=?
+        AND is_bot=1 AND deleted=0 AND seq<?|}
+        [text message.source; text message.room_id; text native_id; integer message.seq] > 0
 
 let anchor t (request : message) = match request.reply_to with
   | None -> None
@@ -372,15 +397,20 @@ let enqueue t ~now ~(config : Config.t) (invocation : invocation) =
 
 let claim_job t ~now = transaction t (fun () ->
   run t "UPDATE jobs SET state='expired' WHERE state='queued' AND expires_at<=?" [real now];
-  match one t {|SELECT id,source,request_seq,trigger,prompt,attempts,expires_at FROM jobs
-    WHERE state='queued' AND available_at<=? ORDER BY id LIMIT 1|} [real now]
+  (* Workers run in parallel, but one requester's jobs in a room stay in order. *)
+  match one t {|SELECT j.id,j.source,j.request_seq,j.trigger,j.prompt,j.attempts,j.expires_at FROM jobs j
+    JOIN messages jm ON jm.source=j.source AND jm.seq=j.request_seq
+    WHERE j.state='queued' AND j.available_at<=? AND NOT EXISTS (
+      SELECT 1 FROM jobs r JOIN messages rm ON rm.source=r.source AND rm.seq=r.request_seq
+      WHERE r.state='running' AND rm.source=jm.source AND rm.room_id=jm.room_id AND rm.sender_id=jm.sender_id)
+    ORDER BY j.id LIMIT 1|} [real now]
     (fun s -> (Sqlite3.column_int64 s 0, Sqlite3.column_text s 1, Sqlite3.column_int64 s 2,
                Sqlite3.column_text s 3, Sqlite3.column_text s 4, Sqlite3.column_int s 5, Sqlite3.column_double s 6)) with
   | None -> None
   | Some (id, source, seq, trigger, prompt, attempts, expires_at) ->
       let message = Option.get (get_message t ~source ~seq) in
       let trigger = match trigger with "mention" -> Mention | "reply" -> Reply | _ -> Slash in
-      let prompt=if trigger=Mention then message.text else prompt in
+      let prompt=if trigger<>Slash then message.text else prompt in
       run t "UPDATE jobs SET state='running',attempts=attempts+1,prompt=? WHERE id=?" [text prompt;integer id];
       Some {id; invocation={message; trigger; prompt}; attempts=attempts+1; expires_at})
 
@@ -493,12 +523,18 @@ let confirm_message t (message : message) =
     | _ -> ()
 
 let get_embedding t ~source ~room ~key ~model ~content =
+  let cached=vector_key ~source ~room ~key ~model in
+  match Hashtbl.find_opt t.vectors cached with
+  | Some (stored, vector) when stored = content -> Some vector
+  | _ ->
   match one t "SELECT content,vector FROM embeddings WHERE source=? AND room_id=? AND cache_key=? AND model=?"
     [text source; text room; text key; text model]
     (fun s -> Sqlite3.column_text s 0, Sqlite3.column_text s 1) with
   | Some (stored, vector) when stored = content ->
       (match Json_util.protect (fun () -> Json_util.list Json_util.float (Yojson.Safe.from_string vector)) with
-       | Ok values -> Some (Array.of_list values)
+       | Ok values ->
+           let vector=Array.of_list values in
+           Hashtbl.replace t.vectors cached (content, vector);Some vector
        | Error _ -> None)
   | _ -> None
 
@@ -512,7 +548,8 @@ let put_embedding ?snapshot t ~source ~room ~key ~model ~content ~at ~version ve
   run t {|INSERT INTO embeddings(source,room_id,cache_key,model,content,vector,created_at,dependencies)
     VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(source,room_id,cache_key,model)
     DO UPDATE SET content=excluded.content,vector=excluded.vector,created_at=excluded.created_at,dependencies=excluded.dependencies|}
-    [text source; text room; text key; text model; text content; text (Json_util.to_string data); real at; opt_text dependencies]
+    [text source; text room; text key; text model; text content; text (Json_util.to_string data); real at; opt_text dependencies];
+  Hashtbl.replace t.vectors (vector_key ~source ~room ~key ~model) (content, vector)
 
 let token_day at = Int64.of_float (floor (at /. 86400.))
 let record_tokens t ~at tokens =
@@ -534,6 +571,10 @@ let purge t ~before = transaction t (fun () ->
   exec t {|DELETE FROM speaker_names WHERE NOT EXISTS (
     SELECT 1 FROM messages m WHERE m.source=speaker_names.source AND m.room_id=speaker_names.room_id
     AND m.sender_id=speaker_names.user_id AND m.deleted=0)|};
+  List.iter (Hashtbl.remove t.vectors) (rows t
+    "SELECT source,room_id,cache_key,model FROM embeddings WHERE created_at<?" [real before]
+    (fun s->vector_key ~source:(Sqlite3.column_text s 0) ~room:(Sqlite3.column_text s 1)
+      ~key:(Sqlite3.column_text s 2) ~model:(Sqlite3.column_text s 3)));
   run t "DELETE FROM embeddings WHERE created_at<?" [real before];
   List.length changed)
 

@@ -72,6 +72,25 @@ let () =
       end) in
   check_followup Config.default.cooldown;
   check_followup 20.;
+  let queue=Store.open_ ":memory:" in
+  Fun.protect ~finally:(fun ()->Store.close queue) (fun () ->
+    let config={Config.default with rooms=["a"]} in
+    let ask seq sender =
+      let message={(message seq "질문") with sender_id=sender;mentions=["bot"]} in
+      ignore(Store.put_message queue ~is_command:true message);
+      ignore(Store.enqueue queue ~now:10010. ~config {message;trigger=Mention;prompt=message.text}) in
+    ask 1L "alice";ask 2L "alice";ask 3L "bob";
+    let first=Option.get(Store.claim_job queue ~now:10010.) in
+    let second=Option.get(Store.claim_job queue ~now:10010.) in
+    check "a second worker takes another requester's job while the first is running"
+      (first.invocation.message.seq=1L && second.invocation.message.seq=3L);
+    check "one requester's next job waits for their running job" (Store.claim_job queue ~now:10010.=None);
+    Store.finish_job queue first ~body:"done" ~dry_run:true ~snapshot_version:None ~evidence:None;
+    check "the waiting job runs once the earlier one finishes"
+      ((Option.get(Store.claim_job queue ~now:10010.)).invocation.message.seq=2L);
+    check "progress lines are capped per job"
+      (Store.reserve_progress queue ~job_id:first.id ~limit:2 && Store.reserve_progress queue ~job_id:first.id ~limit:2
+       && not(Store.reserve_progress queue ~job_id:first.id ~limit:2)));
   let refs=Store.open_ ":memory:" in
   Fun.protect ~finally:(fun ()->Store.close refs) (fun () ->
     let original=message 1L "트리플에스 이야기" in
@@ -208,3 +227,37 @@ let () =
     check "retention cascades output data" (Store.recent_outbox db=[]);
     check "aggregate budget survives content deletion" (Store.tokens_today db ~at:10023.=100);
     Store.close db)
+
+let () =
+  let db=Store.open_ ":memory:" in
+  Fun.protect ~finally:(fun ()->Store.close db) (fun () ->
+    let config={Config.default with rooms=["a";"b"];bot_id="bot";source_id="fixture:1"} in
+    let apply ?(config=config) message=Ingest.apply ~config ~store:db ~now:10100. ~live:true message in
+    let queued=function Ingest.Stored {job=Some (Store.Queued _);_}->true | _->false in
+    let silent=function Ingest.Stored {job=None;_}->true | _->false in
+    let bot_answer={(message ~sender_id:"bot" 30L "봇의 답") with is_bot=true} in
+    ignore(apply bot_answer);
+    ignore(apply (message 31L "사람의 말"));
+    check "reply to a person without a mention stays silent"
+      (silent(apply (message ~reply_to:"native-31" 32L "그러네")));
+    check "reply to a bot message is ignored when the setting is off"
+      (silent(apply ~config:{config with reply_trigger=false} (message ~reply_to:"native-30" 33L "더 자세히")));
+    check "reply to a bot message in another room stays silent"
+      (silent(apply (message ~room_id:"b" ~reply_to:"native-30" 34L "더 자세히")));
+    check "reply to a bot message invokes the bot without a mention"
+      (queued(apply (message ~sender_id:"carol" ~reply_to:"native-30" 35L "더 자세히 알려줘")));
+    (match Store.claim_job db ~now:10100. with
+     | Some job ->
+         check "reply job keeps its trigger and uses the reply text as the request"
+           (job.invocation.trigger=Reply && job.invocation.prompt="더 자세히 알려줘");
+         check "reply request is stored as a command, outside the readable history"
+           (Ingest.invocation ~config ~store:db job.invocation.message<>None)
+     | None -> failwith "reply job was not claimable");
+    check "empty reply to a bot message stays silent"
+      (silent(apply (message ~sender_id:"dave" ~reply_to:"native-30" 36L "  ")));
+    let version=Store.room_version db ~source:"fixture:1" ~room:"a" in
+    let get ()=Store.get_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"text" in
+    Store.put_embedding db ~source:"fixture:1" ~room:"a" ~key:"k" ~model:"embed" ~content:"text" ~at:10050. ~version [|1.;0.|];
+    check "stored vector is served from memory" (get ()=Some [|1.;0.|]);
+    ignore(Store.purge db ~before:10060.);
+    check "retention removes the in-memory vector with its row" (get ()=None))
