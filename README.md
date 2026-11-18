@@ -22,7 +22,7 @@ The bot decides what each request needs. It can read and search earlier messages
 
 ## Setup
 
-Build asko from source; no prebuilt binary releases are provided. You need a Linux x86_64 PC for the build and a rooted ARM64 Android phone with Termux, a KakaoTalk bot account, and [Iris v0.33-gosuda.1](https://github.com/gosuda/Iris/releases/tag/v0.33-gosuda.1) (upstream Iris v0.33 with query tracing and a bounded log). Choose your own phone SSH alias in `~/.ssh/config`; `asko-phone` is only the example used in the instructions.
+Build asko from source; no prebuilt binary releases are provided. You need a Linux x86_64 PC for the build and a rooted ARM64 Android phone with Termux, a KakaoTalk bot account, and [Iris v0.34-gosuda.1](https://github.com/gosuda/Iris/releases/tag/v0.34-gosuda.1) (upstream Iris v0.34 with query tracing, a bounded log, and the KakaoTalk 26.10 reply fix). Choose your own phone SSH alias in `~/.ssh/config`; `asko-phone` is only the example used in the instructions.
 
 On the PC, set up the development tools and generate a local configuration:
 
