@@ -1,4 +1,4 @@
-# Adapted from ocaml/opam-repository at a04b045f1534714416da6b4f8e8e67d2defbb750.
+# Adapted from ocaml/opam-repository at 78f35b9177940ff299f8676f91db81fb98d7455d.
 opam-version: "2.0"
 maintainer:   [ "Eyyüb Sari <eyyub.sari@epitech.eu>"
                 "Romain Calascibetta <romain.calascibetta@gmail.com>" ]
@@ -48,14 +48,13 @@ build: [
   ["rm" "-f" "%{name}%.install"]
 ]
 install: [["dune" "install" "-x" "android" "-p" "digestif"]]
-remove: [["ocamlfind" "-toolchain" "android" "remove" "digestif"]]
 
 url {
   src:
-    "https://github.com/mirage/digestif/releases/download/v1.4.1/digestif-1.4.1.tbz"
+    "https://github.com/mirage/digestif/releases/download/v1.4.2/digestif-1.4.2.tbz"
   checksum: [
-    "sha256=d9a98b16219651defdeb996c79d1abeed3aff309bac0394c98f91fa20f2b8ef9"
-    "sha512=cd94e6c57a3f8c348ade26986756179564bbf1bdfacaa86fb66212748aa8fd4af69940816622265a78fd57cb79d9af1cd2e8aa3ac270ade0a7d83fc8c9152b11"
+    "sha256=0dff807a0e6f3752a1d07c796820c4a6730de3ba4789c9710befd9605138d32e"
+    "sha512=850265faf47b80c9cc5268129d180a14d7a0f8983a888c1ec4cec7942f898777ee077e9ad0797ce7d0854525d1d845eb9635327376cbcade34dbfaf3147f1dcd"
   ]
 }
-x-commit-hash: "291b2f6f03e66064f025b3e931a985eb9cff68e5"
+x-commit-hash: "e2891e5172118ddbc1e22e50d0d54c83b6fdaa2e"

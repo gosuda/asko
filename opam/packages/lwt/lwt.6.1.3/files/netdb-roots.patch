@@ -1,0 +1,8 @@
+--- a/src/unix/unix_c/unix_getprotoby_getservby_job.c
++++ b/src/unix/unix_c/unix_getprotoby_getservby_job.c
+@@ -225,4 +225,4 @@
+     {                                                                    \
+         INIT;                                                            \
+-        return lwt_unix_alloc_job(&(job->job));                          \
++        CAMLreturn(lwt_unix_alloc_job(&(job->job)));                     \
+     }

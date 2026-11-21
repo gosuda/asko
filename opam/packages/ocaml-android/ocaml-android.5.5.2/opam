@@ -69,7 +69,6 @@ install: [
   # <host>-ocamlc and friends, for tools that look for a triple-prefixed compiler
   ["sh" "./install.sh" "%{prefix}%" "%{conf-ndk-android:host}%"]
 ]
-remove: [["sh" "./remove.sh" "%{prefix}%" "%{conf-ndk-android:host}%"]]
 url {
   src: "https://github.com/ocaml/ocaml/releases/download/5.5.2/ocaml-5.5.2.tar.gz"
   checksum: "sha256=bb3ffef5e4fce4f04915b9f254f570663311e1f227fd669aa87a5ef7de9a1523"
@@ -85,5 +84,4 @@ extra-files: [
   ["android.conf.in" "sha256=963fc806024d8627c674152916dd56f8a709532773e4720b39bc430377afc135"]
   ["install-manifest" "sha256=af6269aaa0105cca45c00d3572dc7acc43f328ffe8f3b88e8a1d481482f0a6d3"]
   ["install.sh" "sha256=aaa9a49005eb13cdfbe41b79746deaae324fbc4d7ef7dacf71a60f25be91539b"]
-  ["remove.sh" "sha256=c6cf16a6df373bbd3b2b53ab7256ddf6135c5639bc76669687d31dff7cb5cb30"]
 ]

@@ -7,10 +7,20 @@ if [ -f "$asko_repo/.cache/toolchain-path" ] && [ -z "${ASKO_TOOLCHAIN_DIR:-}" ]
 fi
 export PATH="$asko_toolchain/host-5.5.2/bin:$asko_repo/.cache/bin:$PATH"
 export OPAMROOT="${ASKO_OPAM_ROOT:-$asko_repo/.cache/opam}"
+asko_sqlite=$asko_repo/.cache/native-sqlite-3.54.1
+if [[ ! -f "$asko_sqlite/lib/pkgconfig/sqlite3.pc" ]]; then
+    printf '%s\n' 'Run make setup to prepare the native switch.' >&2
+    exit 1
+fi
 if [ -d "$asko_repo/.cache/native-sysroot" ]; then
     export PKG_CONFIG_PATH="$asko_repo/.cache/native-sysroot/usr/lib/x86_64-linux-gnu/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     export C_INCLUDE_PATH="$asko_repo/.cache/native-sysroot/usr/include:$asko_repo/.cache/native-sysroot/usr/include/x86_64-linux-gnu${C_INCLUDE_PATH:+:$C_INCLUDE_PATH}"
     export LIBRARY_PATH="$asko_repo/.cache/native-sysroot/usr/lib/x86_64-linux-gnu${LIBRARY_PATH:+:$LIBRARY_PATH}"
 fi
+export PKG_CONFIG_PATH="$asko_sqlite/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+# sqlite3-ocaml otherwise replaces PKG_CONFIG_PATH with Homebrew's directory.
+unset SQLITE3_OCAML_BREWCHECK
+export CPATH="$asko_sqlite/include${CPATH:+:$CPATH}"
+export LIBRARY_PATH="$asko_sqlite/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
 cd "$asko_repo"
-exec opam exec --switch=asko-5.5.2 -- "$@"
+exec "$asko_repo/.cache/bin/opam" exec --switch=asko-5.5.2 -- "$@"

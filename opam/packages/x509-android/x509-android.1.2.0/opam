@@ -49,7 +49,6 @@ build: [
   ["rm" "-f" "%{name}%.install"]
 ]
 install: [["dune" "install" "-x" "android" "-p" "x509"]]
-remove: [["ocamlfind" "-toolchain" "android" "remove" "x509"]]
 
 url {
   src:
