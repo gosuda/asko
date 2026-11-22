@@ -3,8 +3,8 @@ set -euo pipefail
 asko_repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$asko_repo"
 asko_toolchain=$(cat .cache/toolchain-path)
-# llama.cpp v0.8.0; keep the build tied to an immutable commit.
-asko_revision=8642541b255bfb5dc39cd351a178be09013a55d6
+# llama.cpp v1.0.0
+asko_revision=b1b770d90d94cad9e9ea5b993bdbc383a522fb28
 asko_upstream=https://github.com/ggml-org/llama.cpp.git
 asko_source="$asko_repo/.cache/jina/llama.cpp"
 asko_ndk="$asko_toolchain/android-ndk-r30"
@@ -39,7 +39,7 @@ asko_cmake_options=(
   "-DCMAKE_TOOLCHAIN_FILE=$asko_ndk/build/cmake/android.toolchain.cmake"
   -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-26 -DANDROID_STL=c++_static
   -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_OPENMP=OFF
-  -DGGML_NATIVE=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF
+  -DGGML_NATIVE=OFF -DLLAMA_BUILD_IS_DEV=OFF -DLLAMA_OPENSSL=OFF -DLLAMA_BUILD_TESTS=OFF
   -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON
   -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_BUILD_APP=OFF
 )

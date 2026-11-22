@@ -203,9 +203,13 @@ For a historical quality check without posting to KakaoTalk, use `./run-phone.sh
 
 To run Jina on the phone, stop the backend, run `./scripts/deploy-jina-phone.sh asko-phone` from the PC, and set `embedding_backend` to `jina`, `embedding_model` to `jina-v5-nano-retrieval-q8`, and `embedding_url` to `http://127.0.0.1:8081/v1` before restarting. The [local Jina preset](../examples/config.local-jina.json) keeps OpenRouter chat, so its chat API key is still required. `init --profile local-jina` only writes configuration; it does not install the model or server.
 
-Jina uses the official `jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF` Q8_0 weights, about 233 MB, under CC-BY-NC-4.0. The installer pins the model checksum and llama.cpp v0.8.0 at revision `8642541b255bfb5dc39cd351a178be09013a55d6`.
+Jina uses the official `jinaai/jina-embeddings-v5-text-nano-retrieval-GGUF` Q8_0 weights (about 233 MB, CC-BY-NC-4.0). The Android build pins llama.cpp v1.0.0 at `b1b770d90d94cad9e9ea5b993bdbc383a522fb28` and verifies the model's SHA-256, `86b6e6279e9b9e71389f02a082764a2ac2b15a50e37482c26f98d69092f12442`.
 
-Jina listens at `http://127.0.0.1:8081/v1` and needs no API key. Queries use `Query: ` and conversation chunks use `Document: `. The server uses last-token pooling, 768 dimensions, two CPU threads, and a 4096-token context. asko sends conversation chunks of about 2000 bytes one at a time. The model ID separates its cache from older embeddings. `embedding_url` is independent of the chat endpoint; another remote endpoint needs its own embedding key. Local embedding calls carry no OpenRouter key and consume no OpenRouter budget; remote calls use the key and the shared budget.
+Jina listens at `http://127.0.0.1:8081/v1` and needs no API key. Queries use `Query: ` and conversation chunks use `Document: `. The server uses last-token pooling, 768 dimensions, two CPU threads, and a 4096-token context. asko sends conversation chunks of about 2000 bytes one at a time. Upgrading only the server lets asko reuse cached document vectors under the same Jina model ID. `embedding_url` is independent of the chat endpoint; another remote endpoint needs its own embedding key. Local embedding calls carry no OpenRouter key and consume no OpenRouter budget; remote calls use the key and the shared budget.
+
+The ARM64/API 26 build was tested with NDK r30, Ninja 1.13.2 and CMake 4.5.1. To build the server locally, put that CMake on `PATH` and run `./scripts/build-jina-android.sh`. [Kitware release files](https://github.com/Kitware/CMake/releases/tag/v4.5.1)
+
+On 2026-11-21, the v0.8.0 and v1.0.0 servers each embedded eight Korean test documents and eight queries on the same phone. All 32 vectors had 768 finite components and unit norm within 5 × 10⁻⁸. All eight queries preserved the full document order when the new server searched vectors produced by either version. With existing v0.8.0 document vectors, the largest change in cosine score was 0.001832.
 
 ## Boot service
 
