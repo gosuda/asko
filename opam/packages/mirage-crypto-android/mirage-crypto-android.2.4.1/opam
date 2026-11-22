@@ -29,7 +29,6 @@ build: [
   ["rm" "-f" "%{name}%.install"]
 ]
 install: [["dune" "install" "-x" "android" "-p" "mirage-crypto"]]
-remove: [["ocamlfind" "-toolchain" "android" "remove" "mirage-crypto"]]
 
 url {
   src:

@@ -22,7 +22,6 @@ build: [
   ["rm" "-f" "sqlite3-android.install"]
 ]
 install: [["dune" "install" "-x" "android" "-p" "sqlite3"]]
-remove: [["ocamlfind" "-toolchain" "android" "remove" "sqlite3"]]
 url {
   src: "https://github.com/mmottl/sqlite3-ocaml/releases/download/5.4.2/sqlite3-5.4.2.tbz"
   checksum: "sha256=32f68f078f4beaed51ebc279fef46145205fd98cf6c79fe955218601f202621c"

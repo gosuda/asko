@@ -1,0 +1,44 @@
+# Adapted from ocaml/opam-repository at 78f35b9177940ff299f8676f91db81fb98d7455d.
+opam-version: "2.0"
+synopsis: "Promises and event-driven I/O for Android"
+maintainer: [
+  "Raphaël Proust <code@bnwr.net>" "Anton Bachin <antonbachin@yahoo.com>"
+]
+authors: ["Jérôme Vouillon" "Jérémie Dimino"]
+license: "MIT"
+homepage: "https://github.com/ocsigen/lwt"
+doc: "https://ocsigen.org/lwt"
+bug-reports: "https://github.com/ocsigen/lwt/issues"
+dev-repo: "git+https://github.com/ocsigen/lwt.git"
+depends: [
+  "dune" {>= "3.18"}
+  "ocaml-android" {>= "4.14"}
+  "dune-configurator" {build}
+  "dune-configurator-android"
+  "ppx_devtools-optcomp" {build}
+  "ppx_devtools-optcomp-android" {build}
+  "ocplib-endian-android"
+]
+depopts: ["conf-libev-android" "lwt_runtime_events-android"]
+patches: ["netdb-roots.patch"]
+build-env: [
+  [LWT_DISCOVER_ARGUMENTS = "--android-target true --use-libev %{conf-libev-android:installed}%"]
+  [PKG_CONFIG_LIBDIR = "%{prefix}%/android-sysroot/lib/pkgconfig"]
+  [PKG_CONFIG_PATH = ""]
+  [LIBRARY_PATH = "%{prefix}%/android-sysroot/lib"]
+  [C_INCLUDE_PATH = "%{prefix}%/android-sysroot/include"]
+  [CPATH = ""]
+]
+build: [
+  ["dune" "build" "-p" "lwt" "-j" jobs "-x" "android" "@install"]
+  ["rm" "-f" "%{name}%.install"]
+]
+install: [["dune" "install" "-x" "android" "-p" "lwt"]]
+url {
+  src: "https://github.com/ocsigen/lwt/archive/refs/tags/6.1.3.tar.gz"
+  checksum: [
+    "sha256=6bc311d7e8aa6a16243ec6c77f9c60a1f17950bc754f2ea3d60e18ff31c155e2"
+    "sha512=b00d615d145f8a08aeb5c69967f9d43c3b67b88a416e2c93b33ca95a75198254e8d707bc76443480ead28e6889bc604d5ecb17d2d02cd7dc2a1e60d497aa9c24"
+  ]
+}
+extra-files: [["netdb-roots.patch" "sha256=333f829d40d23d59eeb0810b306403aa20d3e8aa127fe1ae36ec75b6da75ba5b"]]

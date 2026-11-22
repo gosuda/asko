@@ -1,4 +1,4 @@
-# Adapted from ocaml/opam-repository at a04b045f1534714416da6b4f8e8e67d2defbb750.
+# Adapted from ocaml/opam-repository at 78f35b9177940ff299f8676f91db81fb98d7455d.
 opam-version: "2.0"
 homepage:     "https://github.com/mirleft/ocaml-tls"
 dev-repo:     "git+https://github.com/mirleft/ocaml-tls.git"
@@ -52,14 +52,13 @@ build: [
   ["rm" "-f" "%{name}%.install"]
 ]
 install: [["dune" "install" "-x" "android" "-p" "tls"]]
-remove: [["ocamlfind" "-toolchain" "android" "remove" "tls"]]
 
 url {
   src:
-    "https://github.com/mirleft/ocaml-tls/releases/download/v2.1.4/tls-2.1.4.tbz"
+    "https://github.com/mirleft/ocaml-tls/releases/download/v2.1.5/tls-2.1.5.tbz"
   checksum: [
-    "sha256=75acb0aefbad374f7986f1466d93d6620512a8d536bdfc896c4dc5081b631e05"
-    "sha512=605fec98fcd9a31aea794f3ef4d8d40e739e634c228b5e7a016c9a4025f489d151cd9979d5804ce9680caf5bd16c21ca6e22dd91f9f7217f8b2ddb74b9c8cac3"
+    "sha256=b8a73b589351c0735057db7461618ba640337e0f715f53976f62c48e685ea9c5"
+    "sha512=d3dd21291df4a8c377bf379d45adf158d263ed41652709cac0ee846fe2cbff3e2d6cf6e6556f5fd0e9c2087c45ccac622ad4ba41a7b111660e4bc36c7c8647f8"
   ]
 }
-x-commit-hash: "66f3b11aba332a4994035e247cc8ee5738fb5a52"
+x-commit-hash: "369b8c2714a946909f3c7b5b5a260a99f4cdeeab"

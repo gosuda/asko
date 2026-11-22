@@ -43,7 +43,6 @@ build: [
   ["rm" "-f" "%{name}%.install"]
 ]
 install: [["dune" "install" "-x" "android" "-p" "ppxlib"]]
-remove: [["ocamlfind" "-toolchain" "android" "remove" "ppxlib"]]
 
 url {
   src:

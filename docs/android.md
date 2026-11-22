@@ -27,7 +27,7 @@ Host asko-phone
 
 ## Build tools
 
-On the PC, install `gcc`, `make`, `git`, `curl`, `tar`, `bzip2`, `xz`, `unzip`, `patch`, `python3`, `pkg-config`, `readelf`, `file`, and an OpenSSH client. Jina also needs CMake and Ninja. On Debian/Ubuntu, missing GMP and SQLite headers are downloaded with `apt-get download` and unpacked locally; their runtime libraries must already be installed. Allow several GB for tools and sources. Run the following from the source checkout:
+On the PC, install `gcc`, `ar`, `make`, `git`, `curl`, `tar`, `bzip2`, `xz`, `unzip`, `patch`, `python3`, `pkg-config`, `readelf`, `file`, `flock`, and an OpenSSH client. Jina also needs CMake and Ninja. On Debian/Ubuntu, setup can download missing GMP headers with `apt-get download` and use the installed GMP runtime. It builds a private SQLite library from the same verified source archive used for Android. Allow several GB for tools and sources. Run the following from the source checkout.
 
 ```sh
 ./scripts/setup-dev.sh
@@ -47,7 +47,7 @@ Build the Android executable from the same checkout:
 make android
 ```
 
-Tools stay in `.cache/`. The scripts use OCaml 5.5.2, opam 2.6.1, NDK r30, a pinned Android package repository, and `asko.opam.locked`. Android SQLite and GMP recipes live in `opam/`. Local overrides also pin the Android compiler and updated HTTP, TLS, cryptography, and build libraries. SQLite bindings remain at 5.4.2, with SQLite 3.54.1 statically linked on Android.
+Tools stay in `.cache/`. The scripts use OCaml 5.5.2, opam 2.6.1, Dune 3.25.0 and NDK r30. The native package versions are recorded in [asko.opam.locked](../asko.opam.locked). Both builds use Lwt 6.1.3, TLS 2.1.5, Digestif 1.4.2 and SQLite bindings 5.4.2 linked to SQLite 3.54.1. The [Android recipes](../opam/README.md) specify the pinned cross repository and the packages asko builds locally.
 
 The host compiler is installed under `host-5.5.2` and packages use the `asko-5.5.2` opam switch, so setup can retain the previous compiler and switch. Native and Android dependencies are installed separately; refresh both with `make setup-android`. The lock uses opam's `ocamlfind 1.9.9~preview` package (fixed upstream commit and checksums), because 1.9.8 excludes OCaml 5.5. This is a build tool, not a phone runtime dependency.
 
@@ -57,7 +57,7 @@ For a separate opam dependency root, export `ASKO_OPAM_ROOT=/absolute/path/to/fr
 
 After moving the checkout, rebuild the host compiler and opam switch at the new path: both embed absolute paths. Do not recreate the old checkout path with a compatibility symlink or link caches into Trash. Use fresh `.cache/bin`, `.cache/opam`, and `.cache/toolchain` directories and rerun `make setup-android`; verified source archives and the NDK may be reused. Remove or update `.cache/toolchain-path` if it still names the old location.
 
-For a regular opam environment, install OCaml 5.5.2 and the GMP and SQLite development libraries, then run `opam install . --deps-only --locked` and `dune build`. The Make targets wrap the project-local scripts:
+For a regular opam environment, install OCaml 5.5.2 and the GMP and SQLite development libraries. From the checkout, add the project's Lwt fix with `opam repository add asko-local ./opam --this-switch --rank=1`, then run `opam install . --deps-only --locked` and `dune build`. The Make targets wrap the project-local scripts.
 
 ```sh
 make setup

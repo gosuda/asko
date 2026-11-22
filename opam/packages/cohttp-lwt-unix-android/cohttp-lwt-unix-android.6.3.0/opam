@@ -52,7 +52,6 @@ build: [
   ["rm" "-f" "%{name}%.install"]
 ]
 install: [["dune" "install" "-x" "android" "-p" "cohttp-lwt-unix"]]
-remove: [["ocamlfind" "-toolchain" "android" "remove" "cohttp-lwt-unix"]]
 
 url {
   src:

@@ -28,7 +28,6 @@ build: [
   ["rm" "-f" "%{name}%.install"]
 ]
 install: [["dune" "install" "-x" "android" "-p" "asn1-combinators"]]
-remove: [["ocamlfind" "-toolchain" "android" "remove" "asn1-combinators"]]
 
 url {
   src:
