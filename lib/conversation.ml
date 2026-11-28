@@ -36,8 +36,8 @@ let tools ~web ~rooms =
      (["query",Llm.string_schema;"start",time;"end",time;"speaker_id",time] @ room);
    tool "find_participants" "Find people in this room by a current or previously observed nickname. Returns stable user IDs for speaker_id filters. An empty query lists known people."
      ["query",Llm.string_schema];
-   tool "get_message" "Read the full text of one original message you were shown."
-     ["id",Llm.string_schema]]
+   tool "get_message" "Read an original message by ID. For a long message, continue at next_offset until it is null."
+     ["id",Llm.string_schema;"offset",Llm.nullable (`Assoc ["type",`String "integer"])]]
   @ (if web then [tool "web_search" "Search the public web for current or unfamiliar information. objective says what you need in one sentence; queries are 1 to 3 short keyword searches. Returns URLs with excerpts; use fetch_url to read a result in full."
      ["objective",Llm.string_schema;"queries",`Assoc ["type",`String "array";"maxItems",`Int 3;"items",Llm.string_schema]]] else [])
   @ [tool "fetch_url" "Read a public HTTP or HTTPS URL. Returns the final URL, title, text, and whether text was truncated. Pass the returned next_offset as offset to continue a long page."
@@ -75,8 +75,7 @@ let participant_page people =
         else loop next (count+1) (json::acc) rest in
   loop 0 0 [] people
 
-(* Old tool results are the cheapest context to give up in a long loop. The two
-   newest stay whole; older ones keep a short excerpt and can be fetched again. *)
+(* Only compact results the model has already received, oldest first. *)
 let compact ~budget turns =
   let size=String.length(Json_util.to_string (`List turns)) in
   if size<=budget then turns else begin
@@ -84,17 +83,17 @@ let compact ~budget turns =
     let content turn=match Json_util.field "role" turn,Json_util.field "content" turn with
       | Some(`String "tool"),Some(`String text) when String.length text>1500 -> Some text | _ -> None in
     let candidates=List.filter (fun i->content turns.(i)<>None) (List.init (Array.length turns) Fun.id) in
-    let keep=List.length candidates-2 in
     let excess=ref(size-budget) in
-    List.iteri (fun order i ->
-      if order<keep && !excess>0 then begin
+    List.iter (fun i ->
+      if !excess>0 then begin
         let text=Option.get (content turns.(i)) in
         let stub=Json_util.to_string (`Assoc ["elided",`Bool true;
           "note",`String "Older tool result dropped to save context. Call the tool again if you still need it.";
           "excerpt",`String(if String.is_valid_utf_8 text then Utf8.take 600 text else "")]) in
-        excess:= !excess-(String.length text-String.length stub);
+        let old=turns.(i) in
         turns.(i) <- `Assoc (List.map (fun (key,value)->
-          if key="content" then key,`String stub else key,value) (Json_util.object_ turns.(i)))
+          if key="content" then key,`String stub else key,value) (Json_util.object_ old));
+        excess:= !excess+String.length(Json_util.to_string turns.(i))-String.length(Json_util.to_string old)
       end) candidates;
     Array.to_list turns
   end
@@ -187,6 +186,8 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
   let answer_limit=Llm.answer_limit config in
   let context_bytes=max 1024 (config.max_input_bytes*2/5) in
   let seen=Hashtbl.create 256 in
+  let read_prefix=Hashtbl.create 4 in
+  let sliced=Hashtbl.create 4 in
   let remember messages=List.iter (fun (m:message)->Hashtbl.replace seen m.seq m) messages in
   let visible ()=Hashtbl.to_seq_values seen |> List.of_seq
     |> List.sort (fun (a:message) b->Int64.compare a.seq b.seq) in
@@ -228,7 +229,11 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
   let tool_bytes=ref context_bytes in
   let output ?room messages remaining available =
     name_messages messages >|= fun messages -> remember messages;
-    `Assoc ((match room with None->[] | Some id->["room_id",`String id]) @
+    let blocked=match messages,remaining with
+      | [],(m:message)::_ -> ["oversized_id",`String(Int64.to_string m.seq);
+          "hint",`String "Read oversized_id with get_message starting at offset 0. After its last part, continue read_messages with this ID as after_id."]
+      | _ -> [] in
+    `Assoc (blocked @ (match room with None->[] | Some id->["room_id",`String id]) @
       ["messages",`List(List.map Context_window.context messages);
       "partial",`Bool(remaining<>[]);"available_count",`Int available;"returned_count",`Int(List.length messages);
       "next_after_id",(if remaining=[] then `Null else match List.rev messages with
@@ -241,6 +246,12 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
     let mark () = exhaustive:= `Assoc ["start",safe_time "start" args;"end",safe_time "end" args;
       "speaker_id",Option.value ~default:`Null (Json_util.field "speaker_id" args);
       "message_count",`Int count] :: !exhaustive in
+    let original_page reason =
+      let page,rest=Context_window.page ~bytes:(min !tool_bytes page_bytes) ~limit:max_int messages in
+      if rest=[] then mark ();
+      output page rest count >|= fun result ->
+      Ok(`Assoc (Json_util.object_ result @ ["exhaustive",`Bool(rest=[]);"fallback",`String reason;
+        "continuation",`String "Continue read_messages for the same interval and speaker using next_after_id or oversized_id. Only returned originals have been read."])) in
     if Context_window.size (`List(List.map Context_window.context messages))<= !tool_bytes then begin
       remember messages;mark ();
       Lwt.return(Ok(`Assoc ["messages",`List(List.map Context_window.context messages);
@@ -255,31 +266,43 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
             let key=Context_window.notes_key ~config ~request:task batch in
             let _,notes,_=Store.context_notes store ~job_id ~key in Option.is_some notes in
           n+(if cached then 0 else 1)) 0 groups in
-        if pending+ !calls+3>limit then
-          Lwt.return(Ok(`Assoc ["error",`String "period_too_large_for_remaining_budget";
-            "batches_needed",`Int pending;"model_calls_left",`Int(limit- !calls);
-            "hint",`String "Narrow the interval or speaker, or use search_messages, and say the answer is partial."]))
+        if pending+ !calls+3>limit then original_page "period_too_large_for_remaining_budget"
         else
           let pool=Lwt_pool.create 3 (fun ()->Lwt.return_unit) in
           let completed=ref 0 in
+          let note_call f =
+            if !calls>=limit-3 then Lwt.return(Error(Llm.Limit_exceeded {
+              resource="period_note_calls";actual=Some !calls;limit=limit-3}))
+            else call ~retry:0 f in
           Lwt_list.map_p (fun batch->Lwt_pool.use pool (fun ()->
-            Context_retry.notes ~store ~job_id ~llm ~request:task ~call:(call ~retry:0) batch >|= fun result->
+            Context_retry.notes ~store ~job_id ~llm ~request:task ~call:note_call batch >|= fun result->
             incr completed;
             trace "context_batch" ["completed",`Int !completed;"total",`Int(List.length groups);
               "ok",`Bool(Result.is_ok result)];
-            result)) groups >|= fun results->
-          match List.find_opt Result.is_error results with
-          | Some(Error error)->Error error
-          | _->
-              let facts=List.concat(List.map Result.get_ok results) in
-              if Context_window.size (`List(!notes@facts))>context_bytes then
-                Ok(`Assoc ["error",`String "period_notes_too_large";
-                  "hint",`String "Narrow the interval or speaker and read it in parts."])
+            batch,result)) groups >>= fun results->
+          let failed=Hashtbl.create 4 in
+          let rec collect facts = function
+            | [] -> Ok (List.concat (List.rev facts))
+            | (_,Ok valid)::rest -> collect (valid::facts) rest
+            | (batch,Error (Llm.Bad_response {stage="context_notes";_}
+                | Llm.Limit_exceeded {resource="period_note_calls";_}))::rest ->
+                List.iter(fun (m:message)->Hashtbl.replace failed m.seq ()) batch;
+                collect facts rest
+            | (_,Error e)::_ -> Error e in
+          match collect [] results with
+          | Error e -> Lwt.return(Error e)
+          | Ok facts ->
+              let originals=List.filter(fun (m:message)->Hashtbl.mem failed m.seq) messages in
+              let fields=["notes",`List facts] @ (if originals=[] then [] else
+                ["messages",`List(List.map Context_window.context originals)]) in
+              if Context_window.size (`Assoc fields)> !tool_bytes ||
+                  Context_window.size (`List(!notes@facts))>context_bytes then
+                original_page (if originals=[] then "period_notes_too_large" else "unverified_notes")
               else begin
                 notes:= !notes@facts;remember messages;mark ();
-                Ok(`Assoc ["notes",`List facts;"exhaustive",`Bool true;"read_count",`Int count;
-                  "note",`String "Notes cover every message in the interval but are fallible; check an original with get_message.";
-                  "coverage",coverage ()])
+                Lwt.return(Ok(`Assoc (fields @ ["exhaustive",`Bool true;"read_count",`Int count;
+                  "note",`String "Notes and any accompanying originals cover the interval. Check original evidence with get_message.";
+                  "coverage",coverage ()])))
               end in
   let extracted=Hashtbl.create 4 in
   let local_only=["invalid_url";"only_http_and_https_supported";"url_credentials_not_supported";
@@ -342,9 +365,7 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
              room_used:=true;
              let available=filter messages args in
              let selected,remaining=Context_window.page ~bytes:(min !tool_bytes page_bytes) ~limit:max_int available in
-             if selected=[] && remaining<>[] then Lwt.return(Error(Llm.Limit_exceeded {
-               resource="tool_context_bytes";actual=None;limit= !tool_bytes}))
-             else output ?room:(if scope.room_id=range.room_id then None else Some scope.room_id)
+             output ?room:(if scope.room_id=range.room_id then None else Some scope.room_id)
                selected remaining (List.length available) >|= fun x->Ok x)
     | "read_period" ->
         room_used:=true;
@@ -371,7 +392,20 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
         let loaded=history :: (Hashtbl.to_seq_values others |> Seq.map (fun (_,messages,_)->messages) |> List.of_seq) in
         (match List.find_map (List.find_opt(fun (m:message)->Int64.to_string m.seq=id)) loaded with
         | None->Lwt.return(Ok(`Assoc ["error",`String "Message unavailable in the readable rooms and period"]))
-        | Some m->room_used:=true;remember [m];Lwt.return(Ok(`Assoc ["message",Context_window.context m])))
+        | Some m->
+            room_used:=true;
+            let offset=Json_util.default Json_util.int 0 (Json_util.field "offset" args) in
+            match Context_window.message_slice ~bytes:!tool_bytes ~offset m with
+            | None -> Lwt.return(Ok(`Assoc ["error",`String "No room for message text in this turn"]))
+            | Some(json,stop) ->
+                Hashtbl.replace sliced m.seq m;
+                let prefix=Option.value ~default:0 (Hashtbl.find_opt read_prefix m.seq) in
+                if offset<=prefix then begin
+                  Hashtbl.replace read_prefix m.seq (max stop prefix);
+                  if stop=String.length m.text then remember [m]
+                end;
+                Lwt.return(Ok(`Assoc ["message",json;"next_offset",
+                  (if stop=String.length m.text then `Null else `Int stop)])))
     | _ -> Lwt.return(Ok(`Assoc ["error",`String "Unknown tool"]))) in
   let recent=Context_window.initial ~bytes:(min 24000 (context_bytes/4)) ~recent:history ~inherited in
   let recent=match anchor with
@@ -414,7 +448,8 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
     | "off"->false | "always"->true | _->answer.answer_sources<>[] || !room_used in
   let rec finish revisions turns (answer:Llm.answer) =
     let originals=visible () in
-    let complete () = Ok {answer;evidence_messages=originals;input_messages;
+    let complete () = Ok {answer;evidence_messages=originals;
+      input_messages=input_messages @ List.of_seq(Hashtbl.to_seq_values sliced);
       coverage=coverage ();web_sources= !web} in
     if not(audited answer) then begin
       trace "answer_unaudited" ["model_calls",`Int !calls;"web_sources",`Int(List.length !web)];
@@ -431,8 +466,14 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
       then supporting else cited in
     if Context_window.size (`List(List.map Context_window.context audit_messages))>context_bytes then
       Lwt.return(Error(Llm.Limit_exceeded {resource="audit_context_bytes";actual=None;limit=context_bytes}))
-    else call (fun ()->Context_window.audit ~web:(List.map fst !web) ~llm ~request:task ~answer:answer.answer_text
-      ~coverage:(coverage ()) ~messages:audit_messages ~notes:!notes) >>= function
+    else let audit max_tokens=call ~retry:0 (fun ()->Context_window.audit_with_limit ~max_tokens
+      ~web:(List.map fst !web) ~llm ~request:task ~answer:answer.answer_text
+      ~coverage:(coverage ()) ~messages:audit_messages ~notes:!notes) in
+    let initial=min 1500 config.max_output_tokens in
+    (audit initial >>= function
+      | Error(Llm.Bad_response {reason="truncated completion";_}) -> audit (min (initial*2) config.max_output_tokens)
+      | Error(Llm.Bad_response _) -> audit initial
+      | result -> Lwt.return result) >>= function
     | Error error->Lwt.return(Error error)
     | Ok(true,_,_) ->
         trace "answer_grounded" ["coverage",coverage ();"model_calls",`Int !calls];
@@ -454,10 +495,10 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
       turns @ [`Assoc ["role",`String "user";"content",`String(Json_util.to_string (`Assoc [
         "notice",`String "The tool budget for this request is used up. Call respond now with the best answer from what you already have, and say plainly what you could not check."]))]]
     end in
-    let turns=compact ~budget:(config.max_input_bytes*3/5) turns in
     turn turns (if !closing then [respond_tool] else tools) >>= function
     | Error error->Lwt.return(Error error)
     | Ok assistant ->
+        let turns=compact ~budget:(config.max_input_bytes*2/5) turns in
         let tool_calls=Json_util.optional (Json_util.list Fun.id) (Json_util.field "tool_calls" assistant)
           |> Option.value ~default:[] in
         if tool_calls=[] then
@@ -492,7 +533,8 @@ let run ?deadline ?(notify=fun (_:string)->Lwt.return false) ?(rooms=[]) ?(fetch
                   tool_result (`Assoc ["error",`String "Too many tool calls in one turn; at most 8 run. Call it again if still needed."])
               | Ok args ->
                   tool_bytes:=min context_bytes (max 0 (config.max_input_bytes-
-                    String.length(Json_util.to_string (`List(turns@[assistant]@List.rev results)))-16000));
+                    String.length(Json_util.to_string (`List(turns@[assistant]@List.rev results)))-
+                    min 16000 (config.max_input_bytes/4)));
                   Lwt.catch (fun ()->execute name args)
                     (function Json_util.Invalid _ | Yojson.Json_error _->Lwt.return(Ok(`Assoc ["error",`String "Invalid tool arguments"])) | exn->Lwt.fail exn)
                   >>= function Error error->Lwt.return(Error error) | Ok result->

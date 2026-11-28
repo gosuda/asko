@@ -131,6 +131,14 @@ let open_ path =
        transaction t (fun () -> exec t
          "ALTER TABLE jobs ADD COLUMN progress_sent INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=7");
      exec t "CREATE INDEX IF NOT EXISTS messages_retention ON messages(created_at)";
+     (* Additive metadata. Existing v7 binaries can still open the database for rollback. *)
+     exec t {|CREATE TABLE IF NOT EXISTS withdrawals (
+       source TEXT NOT NULL, room_id TEXT NOT NULL, native_id TEXT NOT NULL, marked_at REAL NOT NULL,
+       PRIMARY KEY(source,room_id,native_id));
+       CREATE TABLE IF NOT EXISTS delivery_receipts (
+         outbox_id INTEGER PRIMARY KEY REFERENCES outbox(id) ON DELETE CASCADE,
+         source TEXT NOT NULL, room_id TEXT NOT NULL, native_id TEXT NOT NULL,
+         UNIQUE(source,room_id,native_id))|};
      t
    with exn -> ignore (Sqlite3.db_close t.db); raise exn)
 let close t = ignore (Sqlite3.db_close t.db)
@@ -288,6 +296,10 @@ let invalidate_message t ~source ~room ~seq =
 let room_version t ~source ~room =
   count t "SELECT version FROM rooms WHERE source=? AND room_id=?" [text source; text room]
 
+let forget_delivered_body t key =
+  run t {|UPDATE outbox SET body='',evidence=NULL WHERE id IN
+    (SELECT outbox_id FROM delivery_receipts WHERE source=? AND room_id=? AND native_id=?) AND body<>''|} key
+
 let put_message t ~is_command (message : message) =
   let message=if message.deleted then {message with text=""} else message in
   let old = get_message t ~source:message.source ~seq:message.seq in
@@ -312,6 +324,12 @@ let put_message t ~is_command (message : message) =
        boolean message.is_bot; boolean message.deleted; boolean is_command];
     run t "INSERT INTO rooms VALUES(?,?,0) ON CONFLICT(source,room_id) DO NOTHING"
       [text message.source; text message.room_id];
+    if message.deleted then begin
+      run t "UPDATE jobs SET prompt='' WHERE source=? AND request_seq=? AND prompt<>''"
+        [text message.source;integer message.seq];
+      if message.is_bot then Option.iter (fun id ->
+        forget_delivered_body t [text message.source;text message.room_id;text id]) message.native_id
+    end;
     if (match old with Some prior -> not(same_content prior message) | None->false) then begin
       run t "UPDATE rooms SET version=version+1 WHERE source=? AND room_id=?" [text message.source; text message.room_id];
       invalidate_message t ~source:message.source ~room:message.room_id ~seq:message.seq
@@ -319,6 +337,20 @@ let put_message t ~is_command (message : message) =
   end;
   old = None
   end
+
+let withdrawn t (message:message) = match message.native_id with
+  | None -> false
+  | Some id -> count t "SELECT EXISTS(SELECT 1 FROM withdrawals WHERE source=? AND room_id=? AND native_id=?)"
+      [text message.source;text message.room_id;text id] = 1
+
+let record_withdrawal t (marker:message) id =
+  let key=[text marker.source;text marker.room_id;text id] in
+  run t {|INSERT INTO withdrawals(source,room_id,native_id,marked_at) VALUES(?,?,?,?)
+    ON CONFLICT(source,room_id,native_id) DO UPDATE SET marked_at=excluded.marked_at
+    WHERE excluded.marked_at>withdrawals.marked_at|} (key @ [real marker.created_at]);
+  forget_delivered_body t key;
+  rows t ("SELECT " ^ message_columns ^ " FROM messages WHERE source=? AND room_id=? AND native_id=? AND deleted=0")
+    key message_row |> List.iter (fun m -> ignore (put_message t ~is_command:false {m with deleted=true}))
 
 let previous t (request : message) =
   one t ("SELECT " ^ message_columns ^ {| FROM messages WHERE source=? AND room_id=?
@@ -456,14 +488,15 @@ let answer_reference t (request:message) (anchor:message option) =
   match anchor with
   | Some m when m.is_bot && m.text<>"" && is_before m request ->
       one t {|SELECT o.body,o.evidence,j.request_seq FROM outbox o JOIN jobs j ON j.id=o.job_id
-        WHERE o.source=? AND o.room_id=? AND o.body=? AND o.state='sent'
+        JOIN messages q ON q.source=j.source AND q.seq=j.request_seq
+        WHERE q.deleted=0 AND o.source=? AND o.room_id=? AND o.body=? AND o.state='sent'
         AND o.floor_seq<? AND j.request_seq<? ORDER BY o.floor_seq DESC LIMIT 1|}
         [text request.source;text request.room_id;text m.text;integer m.seq;integer m.seq] result
   | Some _ -> None
   | None when request.reply_to=None ->
       one t {|SELECT o.body,o.evidence,j.request_seq FROM outbox o JOIN jobs j ON j.id=o.job_id
         JOIN messages m ON m.source=j.source AND m.seq=j.request_seq
-        WHERE o.source=? AND o.room_id=? AND m.sender_id=? AND j.request_seq<?
+        WHERE m.deleted=0 AND o.source=? AND o.room_id=? AND m.sender_id=? AND j.request_seq<?
         AND m.created_at<=? AND m.created_at>=? AND o.attempted_at<=?
         AND o.state='sent' AND o.body<>'' ORDER BY j.request_seq DESC LIMIT 1|}
         [text request.source;text request.room_id;text request.sender_id;integer request.seq;
@@ -497,7 +530,22 @@ let log_delivery_confirmed outgoing =
     "outbox_id",`String(Int64.to_string outgoing.id);"room_id",`String outgoing.room_id;
     "since_send_ms",(match outgoing.attempted_at with None->`Null | Some at->Telemetry.ms(Unix.gettimeofday ()-.at))]
 
-let outgoing_state t outgoing ~state ?error () = transaction t (fun () ->
+let record_receipt t (message:message) outbox_id = Option.iter (fun id ->
+  let key=[text message.source;text message.room_id;text id] in
+  run t "INSERT OR IGNORE INTO delivery_receipts(outbox_id,source,room_id,native_id) VALUES(?,?,?,?)" (integer outbox_id::key);
+  if withdrawn t message then forget_delivered_body t key) message.native_id
+
+let recover_receipt t ~window (message:message) =
+  (* Older releases kept the confirmed body and watermark. Match only a unique,
+     already-sent answer in the same room and delivery window. *)
+  match rows t {|SELECT id FROM outbox WHERE source=? AND room_id=? AND state='sent'
+    AND body=? AND body<>'' AND floor_seq<? AND attempted_at BETWEEN ? AND ?
+    AND NOT EXISTS (SELECT 1 FROM delivery_receipts r WHERE r.outbox_id=outbox.id) LIMIT 2|}
+    [text message.source;text message.room_id;text message.text;integer message.seq;
+     real(message.created_at-.window);real(message.created_at+.1.)] (fun s->Sqlite3.column_int64 s 0) with
+  | [id] -> record_receipt t message id | _ -> ()
+
+let outgoing_state t outgoing ~state ?error ?receipt () = transaction t (fun () ->
   run t "UPDATE outbox SET state=?,error=? WHERE id=? AND state NOT IN ('sent','failed','expired','dry_run','cancelled')"
     [text state; opt_text error; integer outgoing.id];
   let changed = Sqlite3.changes t.db > 0 in
@@ -508,7 +556,10 @@ let outgoing_state t outgoing ~state ?error () = transaction t (fun () ->
     | _ -> "awaiting_send" in
   if changed then run t "UPDATE jobs SET state=?,last_error=? WHERE id=?"
       [text job_state; opt_text error; integer outgoing.job_id];
-  if changed && state="sent" then log_delivery_confirmed outgoing)
+  if changed && state="sent" then begin
+    Option.iter (fun message->record_receipt t message outgoing.id) receipt;
+    log_delivery_confirmed outgoing
+  end)
 
 let confirm_message t (message : message) =
   if message.is_bot then
@@ -519,6 +570,7 @@ let confirm_message t (message : message) =
         (* Called from ingestion's transaction; do not open a nested transaction. *)
         run t "UPDATE outbox SET state='sent',error=NULL WHERE id=?" [integer outgoing.id];
         run t "UPDATE jobs SET state='completed',last_error=NULL WHERE id=?" [integer outgoing.job_id];
+        record_receipt t message outgoing.id;
         log_delivery_confirmed outgoing
     | _ -> ()
 
@@ -567,6 +619,7 @@ let purge t ~before = transaction t (fun () ->
   List.iter (fun (source, room) ->
     run t "UPDATE rooms SET version=version+1 WHERE source=? AND room_id=?" [text source; text room]) changed;
   run t "DELETE FROM messages WHERE created_at<?" [real before];
+  run t "DELETE FROM withdrawals WHERE marked_at<?" [real before];
   run t "DELETE FROM speaker_names WHERE observed_at<? AND is_current=0" [real before];
   exec t {|DELETE FROM speaker_names WHERE NOT EXISTS (
     SELECT 1 FROM messages m WHERE m.source=speaker_names.source AND m.room_id=speaker_names.room_id
