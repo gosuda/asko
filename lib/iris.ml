@@ -30,8 +30,37 @@ let latest t room =
        | Ok value -> Ok value | Error _ -> Error Net.Invalid_json)
   | Ok _ -> Error Net.Invalid_json
 
+let thread_frame t row =
+  let id_of key r = Json_util.required key r |> Json_util.id in
+  match Json_util.protect (fun () -> Int64.of_string (id_of "id" row)) with
+  | Error _ -> Lwt.return (Error Net.Invalid_json)
+  | Ok id ->
+      Net.json ~timeout:t.config.http_timeout `GET
+        (Net.endpoint t.config.iris_url (Printf.sprintf "/chat/%Ld" id)) >|= function
+      | Error e -> Error e
+      | Ok json ->
+          Json_util.protect (fun () ->
+            let raw=Json_util.required "payload" json |> Json_util.required "json" in
+            if not (List.for_all (fun key -> id_of key raw = id_of key row)
+                      ["_id"; "id"; "chat_id"; "user_id"]) then
+              Json_util.invalid "Iris thread frame mismatch";
+            raw) |> Result.map_error (fun _ -> Net.Remote_error)
+
+let history_rows t ~operation sql bindings =
+  let rec resolve acc = function
+    | [] -> Lwt.return (Ok (List.rev acc))
+    | row::rest ->
+        match Json_util.protect (fun () -> Iris_event.needs_thread_frame row) with
+        | Error _ -> Lwt.return (Error Net.Invalid_json)
+        | Ok false -> resolve (row::acc) rest
+        | Ok true -> thread_frame t row >>= function
+          | Ok raw -> resolve (raw::acc) rest | Error e -> Lwt.return (Error e)
+  in
+  query t ~operation sql bindings >>= function
+  | Ok rows -> resolve [] rows | Error e -> Lwt.return (Error e)
+
 let page t ~room ~after ~through ~since =
-  query t ~operation:"history_page" {|SELECT * FROM chat_logs WHERE chat_id = ? AND _id > ? AND _id <= ?
+  history_rows t ~operation:"history_page" {|SELECT * FROM chat_logs WHERE chat_id = ? AND _id > ? AND _id <= ?
     AND created_at >= ? ORDER BY _id ASC LIMIT ?|}
     [room; Int64.to_string after; Int64.to_string through; Printf.sprintf "%.0f" since; "200"]
 
@@ -97,7 +126,7 @@ let room_names t room =
         | _ -> None) rows)
 
 let find_anchor t ~room ~native_id ~since =
-  query t ~operation:"reply_anchor" "SELECT * FROM chat_logs WHERE chat_id = ? AND id = ? AND created_at >= ? LIMIT 2"
+  history_rows t ~operation:"reply_anchor" "SELECT * FROM chat_logs WHERE chat_id = ? AND id = ? AND created_at >= ? LIMIT 2"
     [room; native_id; Printf.sprintf "%.0f" since]
 
 let configure_endpoint t endpoint =

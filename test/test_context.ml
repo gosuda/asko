@@ -50,6 +50,13 @@ let () =
   let split=Context_window.batches ~bytes:4000 [message 1 now long] |> Result.get_ok in
   check "bounded context batches preserve every byte of a long message"
     (String.concat "" (List.concat_map (List.map(fun (m:message)->m.text)) split)=long);
+  let rec read_parts offset acc =
+    let part,stop=Option.get(Context_window.message_slice ~bytes:600 ~offset (message 1 now long)) in
+    let text=get "text" part |> Json_util.string in
+    assert (stop>offset && String.is_valid_utf_8 text);
+    if stop=String.length long then String.concat "" (List.rev(text::acc))
+    else read_parts stop (text::acc) in
+  check "byte cursors reassemble an oversized UTF-8 original exactly" (read_parts 0 []=long);
   let prefix=Retrieval.chunks (List.filter(fun (m:message)->m.seq<128L) old) in
   let extended=Retrieval.chunks old in
   check "new messages do not shift closed embedding windows"
@@ -87,6 +94,7 @@ let () =
     let stop,wake=Lwt.wait () in
     let audit_calls=ref 0 and answer_calls=ref 0 and collected=ref [] and notes_attempts=ref 0 in
     let search_requests=ref [] and extract_requests=ref [] and audited_web=ref [] in
+    let reject_notes=ref (fun (_:string list)->false) and truncate_audit=ref false and audit_limits=ref [] in
     let script=ref (fun (_:int) (_:Yojson.Safe.t) (_:Yojson.Safe.t list)->say "unset") and step=ref 0 in
     let play f=step:=0;script:=f in
     let callback _ request body = Cohttp_lwt.Body.to_string body >>= fun body ->
@@ -108,14 +116,17 @@ let () =
             |> get "name" |> Json_util.string) with Ok name->name | Error _->"" in
           if stage="asko_context_notes" then begin
             incr notes_attempts;
-            if !notes_attempts=2 then say "invalid JSON" else begin
-              let batch=ids (content (List.nth turns 1)) in
+            let batch=ids (content (List.nth turns 1)) in
+            if !reject_notes batch then structured (`Assoc ["facts",`List [`Assoc ["text",`String "unsupported";"sources",`List []]]])
+            else if !notes_attempts=2 then say "invalid JSON" else begin
               collected:=batch@ !collected;
               structured (`Assoc ["facts",`List [`Assoc ["text",`String "이 구간에는 개발 대화가 있었습니다.";
                 "sources",`List [`Int 0;`Int(List.length batch-1)]]]])
             end
           end else if stage="asko_answer_audit" then begin
             incr audit_calls;
+            audit_limits:=(get "max_tokens" json |> Json_util.int)::!audit_limits;
+            if !truncate_audit then (truncate_audit:=false;say ~finish:"length" "") else
             let payload=content (List.nth turns 1) in
             audited_web:=get "web_sources" payload |> Json_util.list Json_util.string;
             let ok=get "answer" payload<>`String "대화 내용이 없습니다" in
@@ -301,5 +312,32 @@ let () =
       run ~job_id:(Some job_id) {digest_config with max_tool_rounds=calls+3} digest_request many >>= fun capped->
       check "whole-job retry cannot reset the conversation call budget"
         (match capped with Error(Llm.Limit_exceeded {resource="max_tool_rounds";_})->true | _->false);
+      reject_notes:=(fun rows->List.mem "2239" rows);
+      let mixed=ref false in
+      play (fun n _ turns -> if n=0 then tool_call "read_period" all_null else begin
+        let page=last turns in
+        mixed:=get "exhaustive" page=`Bool true && List.mem "2239" (ids page)
+               && get "notes" page<>`List [] && not(Retrieval.contains (Json_util.to_string page) "unsupported");
+        respond "기록을 확인했습니다." end);
+      run digest_config digest_request many >>= fun repaired ->
+      check "an ungrounded final batch falls back to its originals with complete coverage"
+        (Result.is_ok repaired && !mixed);
+      reject_notes:=(fun _->true);
+      let paged=ref [] in
+      play (fun n _ turns -> if n=0 then tool_call "read_period" all_null else
+        let page=last turns in
+        paged:= !paged @ ids page;
+        if n=1 then check "invalid batches never claim a full read" (get "exhaustive" page=`Bool false);
+        match get "next_after_id" page with
+        | `String id -> tool_call "read_messages" (`Assoc (("after_id",`String id)::Json_util.object_ all_null))
+        | _ -> respond "마지막 원문까지 확인했습니다.");
+      run {digest_config with max_tool_rounds=96} digest_request many >>= fun all_pages ->
+      check "invalid notes can be replaced by original pages through the final record exactly once"
+        (Result.is_ok all_pages && !paged=List.map(fun (m:message)->Int64.to_string m.seq) many);
+      truncate_audit:=true;audit_limits:=[];
+      play (fun _ _ _ -> respond "감사를 확인했습니다.");
+      run {config with answer_audit="always"} (request "검토") [] >>= fun audited ->
+      check "a truncated grounding verdict retries with more output room"
+        (Result.is_ok audited && List.rev !audit_limits=[1500;3000]);
       Lwt.return_unit)
       (fun ()->Lwt.wakeup_later wake ();server)))

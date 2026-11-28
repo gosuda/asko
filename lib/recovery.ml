@@ -56,18 +56,18 @@ let room ?(on_progress=(fun _->())) ~config ~store ~iris ?through room =
               Lwt.return (Ok ())
           | Ok rows ->
               report "decode_page" after (Some upper) page processed;
-              let decoded = List.map (Iris_event.of_query_row ~source:config.source_id ~bot_id:config.bot_id) rows in
+              let decoded = List.map (Iris_event.decode_row ~source:config.source_id ~bot_id:config.bot_id) rows in
               if List.exists Result.is_error decoded then Lwt.return (Error Net.Invalid_json)
               else
                 let messages = List.map Result.get_ok decoded in
                 report "validate_page" after (Some upper) page processed;
-                if List.exists (fun (m:Types.message) -> m.room_id <> room || m.seq <= after || m.seq > upper) messages
+                if List.exists (fun ((m:Types.message),_) -> m.room_id <> room || m.seq <= after || m.seq > upper) messages
                 then Lwt.return (Error Net.Invalid_json)
                 else begin
                   (* Each message is committed before advancing the verified page cursor.
                      Replayed history never creates jobs; duplicate live callbacks still can. *)
-                  List.iter (fun m -> ignore (Ingest.apply ~config ~store ~now ~live:false m)) messages;
-                  let next = List.fold_left (fun acc (m:Types.message) -> max acc m.seq) after messages in
+                  List.iter (fun (m,withdrawn) -> ignore (Ingest.apply ?withdrawn ~config ~store ~now ~live:false m)) messages;
+                  let next = List.fold_left (fun acc ((m:Types.message),_) -> max acc m.seq) after messages in
                   Store.save_cursor store ~source:config.source_id ~room ~cursor:next ~at:now ~coverage_start;
                   Lwt.pause () >>= fun () -> loop next (page+1) (processed+List.length messages)
                 end
@@ -103,17 +103,17 @@ let reconcile ?(on_progress=(fun _->())) ~config ~store ~iris room =
         | Ok [] -> Lwt.return (Ok ())
         | Ok rows ->
             report "decode_page" after (Some upper) page processed;
-            let decoded=List.map (Iris_event.of_query_row ~source:config.source_id ~bot_id:config.bot_id) rows in
+            let decoded=List.map (Iris_event.decode_row ~source:config.source_id ~bot_id:config.bot_id) rows in
             if List.exists Result.is_error decoded then Lwt.return (Error Net.Invalid_json) else
             let messages=List.map Result.get_ok decoded in
             report "validate_page" after (Some upper) page processed;
-            if List.exists (fun (m:Types.message)->m.room_id<>room || m.seq<=after || m.seq>upper) messages then
+              if List.exists (fun ((m:Types.message),_)->m.room_id<>room || m.seq<=after || m.seq>upper) messages then
               Lwt.return (Error Net.Invalid_json)
             else begin
-              List.iter (fun (m:Types.message)->
+                List.iter (fun ((m:Types.message),withdrawn)->
                 Hashtbl.replace seen m.seq ();
-                ignore (Ingest.apply ~config ~store ~now ~live:false m)) messages;
-              let next=List.fold_left (fun seq (m:Types.message)->max seq m.seq) after messages in
+                  ignore (Ingest.apply ?withdrawn ~config ~store ~now ~live:false m)) messages;
+                let next=List.fold_left (fun seq ((m:Types.message),_)->max seq m.seq) after messages in
               Lwt.pause () >>= fun ()->scan next (page+1) (processed+List.length messages)
             end
         end in

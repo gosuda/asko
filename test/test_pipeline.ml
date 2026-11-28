@@ -20,18 +20,22 @@ let raw_query db sql bindings =
       | code -> failwith (Sqlite3.Rc.to_string code) in loop [])
 
 let native_id seq = Int64.to_string (Int64.add 9007199254740993L (Int64.of_int seq))
-let insert db ~seq ~room ~sender ~at ~text ?reply ?(mentions=[]) () =
-  let stmt=Sqlite3.prepare db "INSERT INTO chat_logs VALUES(?,?,?,?,?,?,?,?)" in
+let insert db ~seq ~room ~sender ~at ~text ?reply ?thread ?supplement ?(mentions=[]) () =
+  let stmt=Sqlite3.prepare db "INSERT INTO chat_logs(_id,id,chat_id,user_id,created_at,message,attachment,v,thread_id,supplement) VALUES(?,?,?,?,?,?,?,?,?,?)" in
   Fun.protect ~finally:(fun ()->ignore (Sqlite3.finalize stmt)) (fun () ->
     let attachment=Json_util.to_string (`Assoc ((match reply with None->[] | Some id->["src_logId",`String id]) @ ["mentions",`List (List.map (fun id->`Assoc ["user_id",`String id]) mentions)])) in
     let mine=if sender="9999" then {|{"isMine":true}|} else {|{"isMine":false}|} in
     ignore (Sqlite3.bind_values stmt [Sqlite3.Data.INT (Int64.of_int seq);Sqlite3.Data.TEXT (native_id seq);
       Sqlite3.Data.TEXT room;Sqlite3.Data.TEXT sender;Sqlite3.Data.INT (Int64.of_float at);
-      Sqlite3.Data.TEXT text;Sqlite3.Data.TEXT attachment;Sqlite3.Data.TEXT mine]);
+      Sqlite3.Data.TEXT text;Sqlite3.Data.TEXT attachment;Sqlite3.Data.TEXT mine;Store.opt_text thread;Store.opt_text supplement]);
     if Sqlite3.step stmt<>Sqlite3.Rc.DONE then failwith "fixture insert")
 
 let event db seq =
   let row=List.hd (raw_query db "SELECT * FROM chat_logs WHERE _id=?" [`String (string_of_int seq)]) in
+  let row=match Json_util.field "thread_id" row with
+    | Some (`String id) -> `Assoc (("attachment",`Assoc ["src_logId",`String id;"src_isThread",`Bool true])
+                                  ::List.remove_assoc "attachment" (Json_util.object_ row))
+    | _ -> row in
   `Assoc ["json",row;"msg",field "message" row;"sender",`String "앨리스"]
 
 let () =
@@ -41,7 +45,8 @@ let () =
   let store=Store.open_ path in
   let fixture=Sqlite3.db_open ":memory:" in
   ignore (Sqlite3.exec fixture {|CREATE TABLE chat_logs(_id INTEGER PRIMARY KEY,id TEXT,chat_id TEXT,
-    user_id TEXT,created_at INTEGER,message TEXT,attachment TEXT,v TEXT)|});
+    user_id TEXT,created_at INTEGER,message TEXT,attachment TEXT,v TEXT,type INTEGER DEFAULT 1,thread_id TEXT,supplement TEXT,
+    deleted_at INTEGER DEFAULT 0)|});
   let now=floor (Unix.gettimeofday ()) in
   for seq=1 to 205 do
     let text=if seq=1 then "MVCC를 지원하는 관계형 데이터베이스를 검토하자"
@@ -56,6 +61,7 @@ let () =
   let expected_embedding_auth=ref None in
   let chats=ref 0 and embeddings=ref 0 and deliveries=ref [] and contexts=ref [] in
   let bad_citation=ref false and backend_port=ref None in
+  let wrong_frame=ref false in
   let fail_second_page=ref false and timeout_second_page=ref false and error_second_page=ref false in
   let stop,wake_stop=Lwt.wait () and mock_stop,wake_mock=Lwt.wait () in
   let cleanup () =
@@ -77,6 +83,11 @@ let () =
       let json=if raw="" then `Null else Yojson.Safe.from_string raw in
       match Uri.path (Cohttp.Request.uri request) with
       | "/config" -> response (`Assoc ["bot_id",`String "9999";"message_send_rate",`Int 200])
+      | path when path="/chat/" ^ native_id 710 ->
+          let row=event fixture 710 |> field "json" |> Json_util.object_ in
+          let row=if !wrong_frame then ("chat_id",`String "elsewhere")::List.remove_assoc "chat_id" row else row in
+          let raw=`Assoc (("attachment",`Assoc ["src_logId",`String(native_id 211)])::List.remove_assoc "attachment" row) in
+          response (`Assoc ["payload",`Assoc ["json",raw]])
       | "/query" ->
           let sql=field "query" json |> Json_util.string in
           let bindings=field "bind" json |> Json_util.list Fun.id in
@@ -288,6 +299,12 @@ let () =
       let after_first_pass= !embeddings in
       Engine.preindex indexer "1001" >>= fun () ->
       check "background indexing skips a room without new messages" (!embeddings=after_first_pass);
+      let edited=List.hd history in
+      ignore(Store.put_message store ~is_command:false {edited with text=edited.text ^ " (edited)"});
+      Engine.preindex indexer "1001" >>= fun () ->
+      check "editing an older message rebuilds affected closed chunks without a new arrival"
+        (!embeddings>after_first_pass);
+      ignore(Store.put_message store ~is_command:false edited);
       let request={Types.message={m with seq=209L;created_at=now};trigger=Types.Mention;prompt="postgres"} in
       let capped={config with max_tool_rounds=1} in
       let calls_before= !chats in
@@ -329,8 +346,11 @@ let () =
       check "bot echo is not retained as summary input" ((Option.get (Store.get_message store ~source:config.source_id ~seq:211L)).Types.text="");
       post 210 >>= fun _ -> Lwt_unix.sleep 0.1 >>= fun () ->
       check "duplicate callback after recovery does not create another reply" (List.length !deliveries=1);
-      insert fixture ~seq:220 ~room:"1001" ~sender:"2001" ~at:now ~text:"이 얘기 어떻게 됐어?" ~reply:(native_id 211) ~mentions:["9999"] ();
+      insert fixture ~seq:220 ~room:"1001" ~sender:"2001" ~at:now ~text:"이 얘기 어떻게 됐어?" ~thread:(native_id 211) ();
       post 220 >>= fun _ -> wait_sent 2 200 >>= fun () ->
+      check "thread-only webhook survives history recovery and produces one confirmed answer"
+        (Store.count store "SELECT COUNT(*) FROM jobs JOIN outbox ON outbox.job_id=jobs.id WHERE request_seq=220 AND trigger='reply' AND attempts=1 AND outbox.state='sent'" []=1
+         && (Option.get(Store.get_message store ~source:config.source_id ~seq:220L)).reply_to=Some(native_id 211));
       check "follow-up to the bot searches original conversation" (List.mem "1" (List.hd !contexts));
       insert fixture ~seq:230 ~room:"1001" ~sender:"2001" ~at:now ~text:"최근 2시간 대화 정리해줘" ~mentions:["9999"] ();
       post 230 >>= fun _ -> wait_sent 3 200 >>= fun () ->
@@ -342,6 +362,20 @@ let () =
         (List.length !deliveries=5 && List.nth !deliveries 1="찾아보는 중이에요"
          && List.length (Store.recent_outbox store)=4
          && List.for_all (fun (o:Store.outgoing)->o.state="sent") (Store.recent_outbox store));
+      let receipt=Store.count store "SELECT COUNT(*) FROM delivery_receipts WHERE native_id=?" [Store.text(native_id 211)] in
+      check "a confirmed echo stores the bot message ID" (receipt=1);
+      Store.run store "DELETE FROM delivery_receipts WHERE native_id=?" [Store.text(native_id 211)];
+      (* The mock Iris stamps every echo with the fixed fixture clock. Align the
+         legacy send timestamp with it, independently of device test speed. *)
+      Store.run store "UPDATE outbox SET attempted_at=? WHERE job_id=(SELECT id FROM jobs WHERE request_seq=210)"
+        [Store.real(now+.0.25)];
+      insert fixture ~seq:640 ~room:"1001" ~sender:"2001" ~at:now
+        ~text:(Json_util.to_string (`Assoc ["logId",`String(native_id 211)])) ();
+      Store.check(Sqlite3.exec fixture {|UPDATE chat_logs SET type=0,deleted_at=created_at,v='{"origin":"SYNCMODMSG"}' WHERE _id=640|});
+      Recovery.reconcile ~config ~store ~iris "1001" >>= fun removed_bot ->
+      check "a withdrawal erases an older confirmed bot answer from follow-up context"
+        (Result.is_ok removed_bot && Store.count store {|SELECT COUNT(*) FROM outbox o JOIN jobs j ON j.id=o.job_id
+          WHERE j.request_seq=210 AND o.state='sent' AND o.body='' AND o.evidence IS NULL|} []=1);
       ignore(Sqlite3.exec fixture "DELETE FROM chat_logs WHERE _id=201");
       fail_second_page:=true;
       Recovery.reconcile ~config ~store ~iris "1001" >>= fun incomplete ->
@@ -353,6 +387,24 @@ let () =
         (Result.is_ok reconciled && (Option.get(Store.get_message store ~source:config.source_id ~seq:201L)).Types.deleted);
       check "source deletion invalidates stored summary evidence"
         (List.for_all (fun (o:Store.outgoing)->o.body="" && o.evidence=None) (Store.recent_outbox store));
+      insert fixture ~seq:650 ~room:"1001" ~sender:"2001" ~at:now ~text:"withdrawn fixture" ();
+      insert fixture ~seq:651 ~room:"1001" ~sender:"2001" ~at:now
+        ~text:(Json_util.to_string (`Assoc ["logId",`String(native_id 650)])) ();
+      Store.check(Sqlite3.exec fixture {|UPDATE chat_logs SET type=0,deleted_at=created_at,v='{"origin":"SYNCDLMSG"}' WHERE _id=651|});
+      Recovery.reconcile ~config ~store ~iris "1001" >>= fun markers ->
+      let withdrawn=Option.get(Store.get_message store ~source:config.source_id ~seq:650L) in
+      check "reconciliation withdraws the still-present original and excludes marker payloads"
+        (Result.is_ok markers && withdrawn.deleted && withdrawn.text="" &&
+         (Option.get(Store.get_message store ~source:config.source_id ~seq:651L)).deleted);
+      insert fixture ~seq:710 ~room:"1001" ~sender:"2001" ~at:now ~text:"legacy thread" ~supplement:"opaque-ciphertext" ();
+      let legacy ()=Iris.page iris ~room:"1001" ~after:709L ~through:710L ~since:0. in
+      legacy () >>= fun frame ->
+      check "older opaque thread supplements use the matching Iris frame" (match frame with
+        | Ok [raw] -> (Result.get_ok(Iris_event.of_query_row ~source:config.source_id ~bot_id:config.bot_id raw)).reply_to=Some(native_id 211)
+        | _ -> false);
+      wrong_frame:=true;
+      legacy () >>= fun wrong ->
+      check "a frame from another room cannot supply the thread parent" (wrong=Error Net.Remote_error);
       let events= !telemetry in
       let is value key event=Json_util.field key event=Some(`String value) in
       check "model calls are timed inside job traces" (List.exists(fun event->

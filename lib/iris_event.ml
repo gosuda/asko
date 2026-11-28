@@ -8,7 +8,40 @@ let embedded name json =
        | Ok (`Assoc _ as value) -> value
        | Ok _ | Error _ -> `Assoc [])
 
-let normalize ~source ~bot_id payload = Json_util.protect (fun () ->
+let text_message row = match Json_util.field "type" row with
+  | Some (`String "1" | `Int 1) -> true | _ -> false
+
+let reply_id = function
+  | None | Some (`Null | `String "" | `String "0" | `Int 0) -> None
+  | value -> Json_util.optional Json_util.id value
+
+let positive_id key row =
+  match Json_util.field key row with
+  | Some value ->
+      (match Json_util.protect (fun () -> Json_util.id value |> Int64.of_string_opt) with
+       | Ok (Some id) when id > 0L -> Some (Int64.to_string id)
+       | _ -> None)
+  | None -> None
+
+(* Iris enriches webhook attachments with the thread parent. /query returns the
+   underlying columns, including the native thread ID on newer KakaoTalk. *)
+let reply_parent row attachment =
+  let quoted = reply_id (Json_util.field "src_logId" attachment) in
+  if not (text_message row) then quoted else
+  match positive_id "thread_id" row, quoted with
+  | Some id, _ | None, Some id -> Some id
+  | None, None -> positive_id "threadId" (embedded "supplement" row)
+
+(* Older clients can keep the only thread ID in an encrypted supplement.
+   For those rows Iris's /chat endpoint provides the same frame as the webhook. *)
+let needs_thread_frame row =
+  match Json_util.field "supplement" row with
+  | Some (`String value) when value <> "" ->
+      text_message row && reply_parent row (embedded "attachment" row) = None &&
+      Result.is_error (Json_util.protect (fun () -> Yojson.Safe.from_string value))
+  | _ -> false
+
+let decode ~source ~bot_id payload = Json_util.protect (fun () ->
   let open Json_util in
   let raw = required "json" payload in
   let seq_text = required "_id" raw |> id in
@@ -26,11 +59,7 @@ let normalize ~source ~bot_id payload = Json_util.protect (fun () ->
   let attachment = embedded "attachment" raw in
   let metadata = embedded "v" raw in
   let native_id = optional id (field "id" raw) in
-  let reply_to =
-    match field "src_logId" attachment with
-    | None | Some `Null | Some (`String "") | Some (`Int 0) -> None
-    | value -> optional id value
-  in
+  let reply_to = reply_parent raw attachment in
   let mentions =
     match field "mentions" attachment with
     | Some (`List values) -> List.filter_map (fun mention ->
@@ -41,14 +70,24 @@ let normalize ~source ~bot_id payload = Json_util.protect (fun () ->
     | _ -> []
   in
   let mine = field "isMine" metadata = Some (`Bool true) in
+  let marker = match field "origin" metadata with
+    | Some (`String ("SYNCDLMSG" | "SYNCMODMSG")) -> default float 0. (field "deleted_at" raw) > 0.
+    | _ -> false in
+  let withdrawn = if not marker then None else
+    match protect (fun () -> positive_id "logId" (Yojson.Safe.from_string text)) with
+    | Ok id -> id | Error _ -> None in
   { source; seq; native_id; room_id; sender_id;
     sender_name=Utf8.take 512 (default string sender_id (field "sender" payload));
     created_at; text; reply_to; mentions;
     is_bot=mine || (bot_id <> "" && sender_id = bot_id);
-    deleted=field "deleted" raw = Some (`Bool true) })
+    deleted=marker || field "deleted" raw = Some (`Bool true) }, withdrawn)
+
+let normalize ~source ~bot_id payload = Result.map fst (decode ~source ~bot_id payload)
+
+let decode_row ~source ~bot_id row = decode ~source ~bot_id (`Assoc ["json", row])
 
 let of_query_row ~source ~bot_id row =
-  normalize ~source ~bot_id (`Assoc ["json", row])
+  Result.map fst (decode_row ~source ~bot_id row)
 
 let to_json (message : message) = `Assoc [
   "source", `String message.source; "seq", `String (Int64.to_string message.seq);

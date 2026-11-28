@@ -12,6 +12,18 @@ let () =
   let event = Iris_event.normalize ~source:"fixture:1" ~bot_id:"bot" (Yojson.Safe.from_string payload) |> Result.get_ok in
   check "large native IDs preserve integer precision" (event.native_id=Some "9007199254740993" && event.reply_to=Some "9007199254740992");
   check "mention metadata parsed" (event.mentions=["bot"]);
+  let row fields=let base=Json_util.required "json" (Yojson.Safe.from_string payload) |> Json_util.object_ in
+    `Assoc (fields @ List.filter (fun (k,_)->not(List.mem_assoc k fields)) base) in
+  let parent fields=(Iris_event.of_query_row ~source:"fixture:1" ~bot_id:"bot" (row fields) |> Result.get_ok).reply_to in
+  let text_row=["type",`String "1";"attachment",`Null] in
+  check "raw thread ID matches an enriched webhook without losing integer precision"
+    (parent (("thread_id",`String "9007199254740993")::text_row)=Some "9007199254740993");
+  check "legacy supplementary thread parent and zero sentinel are distinguished"
+    (parent (("supplement",`String {|{"threadId":9007199254740993}|})::("thread_id",`String "0")::text_row)=Some "9007199254740993"
+     && parent ["type",`Int 2;"thread_id",`Int 123;"attachment",`String {|{"src_logId":"0"}|}]=None);
+  check "ordinary quoted replies win over a supplementary thread hint"
+    (parent ["type",`Int 1;"attachment",`Assoc ["src_logId",`String "44"];
+             "supplement",`Assoc ["threadId",`String "55"]]=Some "44");
   let root=Yojson.Safe.from_string payload in
   let raw=Json_util.required "json" root |> Json_util.object_ in
   let no_attachment=`Assoc ["json",`Assoc (("attachment",`String "null")::List.remove_assoc "attachment" raw)] in
@@ -232,6 +244,32 @@ let () =
   let db=Store.open_ ":memory:" in
   Fun.protect ~finally:(fun ()->Store.close db) (fun () ->
     let config={Config.default with rooms=["a";"b"];bot_id="bot";source_id="fixture:1"} in
+    let marker seq room origin deleted_at target =
+      let body=Json_util.to_string (`Assoc ["logId",`String target]) in
+      `Assoc ["msg",`String body;"json",`Assoc ["_id",`Int seq;"id",`String(string_of_int (2000+seq));
+        "chat_id",`String room;"user_id",`String "moderator";"created_at",`Int 10100;"type",`Int 0;
+        "deleted_at",`Int deleted_at;"v",`Assoc ["origin",`String origin]]] in
+    let ingest payload=Ingest.event ~config ~store:db ~now:10100. payload |> Result.get_ok |> ignore in
+    let original={(message 12L "withdraw me") with native_id=Some "9012";mentions=["bot"]} in
+    let other={original with seq=13L;room_id="b";mentions=[]} in
+    let stored (m:Types.message)=Option.get(Store.get_message db ~source:m.source ~seq:m.seq) in
+    let insert m=ignore(Ingest.apply ~config ~store:db ~now:10100. ~live:true m) in
+    insert original;insert other;
+    ingest(marker 14 "a" "MSG" 100 "9012");
+    ingest(marker 15 "a" "SYNCREWR" 100 "9012");
+    ingest(marker 16 "a" "SYNCDLMSG" 0 "9012");
+    check "message text and rewrite events cannot withdraw another message" (not(stored original).deleted);
+    ingest(marker 17 "a" "SYNCMODMSG" 100 "9012");
+    check "moderator withdrawal erases only the same-room original and its retained prompt"
+      ((stored original).deleted && (stored original).text="" && not(stored other).deleted &&
+       Store.count db "SELECT COUNT(*) FROM jobs WHERE request_seq=12 AND prompt=''" []=1);
+    let late={original with seq=18L;native_id=Some "9018"} in
+    ingest(marker 19 "a" "SYNCDLMSG" 100 "9018");
+    insert late;insert original;
+    check "late and duplicate originals stay withdrawn without creating jobs"
+      ((stored late).deleted && (stored original).deleted && (stored late).text="" &&
+       Store.count db "SELECT COUNT(*) FROM jobs WHERE request_seq=18" []=0);
+    Store.exec db "DELETE FROM jobs WHERE request_seq=12";
     let apply ?(config=config) message=Ingest.apply ~config ~store:db ~now:10100. ~live:true message in
     let queued=function Ingest.Stored {job=Some (Store.Queued _);_}->true | _->false in
     let silent=function Ingest.Stored {job=None;_}->true | _->false in
